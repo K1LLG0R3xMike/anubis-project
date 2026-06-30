@@ -1,0 +1,75 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.Python
+
+# ─── Entornos virtuales ───────────────────────────────────────────────────────
+backend/venv/
+venv/
+.venv/
+env/
+
+# ─── Variables de entorno (credenciales) ──────────────────────────────────────
+backend/.env
+.env
+.env.*
+!.env.example
+!backend/.env.example
+
+# ─── Base de datos local ──────────────────────────────────────────────────────
+backend/database.db
+*.db
+*.sqlite3
+
+# ─── Celery ───────────────────────────────────────────────────────────────────
+celerybeat-schedule
+celerybeat-schedule.db
+celerybeat.pid
+
+# ─── Frontend ─────────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# ─── Reportes de escaneo (datos reales de clientes/targets) ──────────────────
+# Excluir todos los archivos de datos, pero conservar .gitkeep para la estructura
+reports/**/*.json
+reports/**/*.html
+reports/**/*.txt
+reports/**/*.log
+!reports/**/.gitkeep
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── Targets / sitios (URLs reales) ──────────────────────────────────────────
+sitios.txt
+backend/sitios.txt
+
+# ─── Archivos temporales del backend ─────────────────────────────────────────
+backend/.tmp
+*.tmp
+
+# ─── Documentos de clientes ───────────────────────────────────────────────────
+*.docx
+*.pdf
+
+# ─── Claude Code ──────────────────────────────────────────────────────────────
+.claude/
+
+# ─── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

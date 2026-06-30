@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-on-surface font-body;
+    min-height: 100dvh;
+    margin: 0;
+  }
+
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+    @apply inline-block align-middle;
+  }
+}
+
+@layer base {
+  /* Mode-switch animations */
+  @keyframes logoSwitch {
+    0%   { transform: scale(1)    rotate(0deg);   opacity: 1; }
+    40%  { transform: scale(0.55) rotate(-18deg); opacity: 0.4; }
+    100% { transform: scale(1)    rotate(0deg);   opacity: 1; }
+  }
+  @keyframes modeFlash {
+    0%   { opacity: 1; }
+    20%  { opacity: 0.45; filter: brightness(1.4); }
+    100% { opacity: 1; filter: brightness(1); }
+  }
+  @keyframes pulse-red {
+    0%   { box-shadow: 0 0 0 0   rgba(255, 49, 49, 0.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(255, 49, 49, 0); }
+    100% { box-shadow: 0 0 0 0   rgba(255, 49, 49, 0); }
+  }
+  @keyframes pulse-blue {
+    0%   { box-shadow: 0 0 0 0   rgba(154, 168, 255, 0.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(154, 168, 255, 0); }
+    100% { box-shadow: 0 0 0 0   rgba(154, 168, 255, 0); }
+  }
+  @keyframes neon-pulse {
+    0%   { border-color: rgba(255, 84, 75, 0.2); box-shadow: 0 0 4px  rgba(255, 84, 75, 0.05); }
+    50%  { border-color: rgba(255, 84, 75, 0.5); box-shadow: 0 0 14px rgba(255, 84, 75, 0.15); }
+    100% { border-color: rgba(255, 84, 75, 0.2); box-shadow: 0 0 4px  rgba(255, 84, 75, 0.05); }
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+}
+
+@layer components {
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-background;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-container-highest rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-primary;
+  }
+}
