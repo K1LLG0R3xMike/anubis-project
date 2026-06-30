@@ -12,9 +12,10 @@ celery_app = Celery(
 )
 
 # ── Colas de ejecución ────────────────────────────────────────────────────────
-# heavy: ZAP y Nikto (lanzan Firefox/GeckoDriver, consumen /tmp y CPU)
-# light: WAF, WhatWeb, Headers, Certs (rápidos, sin dependencias pesadas)
-# beat:  tareas periódicas del scheduler (nunca deben bloquearse)
+# heavy:  ZAP y Nikto (lanzan Firefox/GeckoDriver, consumen /tmp y CPU)
+# light:  WAF, WhatWeb, Headers, Certs (rápidos, sin dependencias pesadas)
+# attack: execute_attack_run — orquestación del DAG de Anubis Attack
+# beat:   tareas periódicas del scheduler (nunca deben bloquearse)
 #
 # Para ejecución estrictamente serial de escaneos pesados, arrancar un worker
 # dedicado a la cola heavy con concurrencia 1:
@@ -22,6 +23,7 @@ celery_app = Celery(
 celery_app.conf.task_queues = (
     Queue('heavy'),
     Queue('light'),
+    Queue('attack'),
     Queue('beat'),
 )
 celery_app.conf.task_default_queue = 'light'

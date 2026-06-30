@@ -1410,6 +1410,49 @@ def get_vector_run(run_id: int, db: Session = Depends(database.get_db)):
     }
 
 
+@app.get("/attack/vector-runs")
+def list_vector_runs(estado: Optional[str] = None, target_id: Optional[int] = None,
+                      db: Session = Depends(database.get_db)):
+    """Lista vector_runs completados, enriquecidos con datos del target.
+    Usado por el findings de Anubis Attack para mostrar las explotaciones confirmadas
+    por el agente IA (estado=explotable) con toda la info que muestra el modal de ejecución."""
+    q = db.query(models.VectorRun).filter(models.VectorRun.status == 'completed')
+    if estado:
+        q = q.filter(models.VectorRun.estado == estado)
+    if target_id:
+        q = q.filter(models.VectorRun.target_id == target_id)
+    runs = q.order_by(models.VectorRun.completed_at.desc()).all()
+
+    target_ids = {r.target_id for r in runs}
+    targets = {}
+    if target_ids:
+        for t in db.query(models.Target).filter(models.Target.id.in_(target_ids)).all():
+            targets[t.id] = t
+
+    result = []
+    for r in runs:
+        t = targets.get(r.target_id)
+        result.append({
+            'id':                r.id,
+            'target_id':         r.target_id,
+            'target_name':       t.name if t else None,
+            'target_url':        t.url if t else None,
+            'vector_name':       r.vector_name,
+            'vector_titulo':     r.vector_titulo,
+            'mode':              r.mode,
+            'estado':            r.estado,
+            'resumen':           r.resumen,
+            'evidencia_tecnica': r.evidencia_tecnica,
+            'impacto_negocio':   r.impacto_negocio,
+            'comando_clave':     r.comando_clave,
+            'recomendacion':     r.recomendacion,
+            'iterations':        r.iterations,
+            'started_at':        r.started_at.isoformat() if r.started_at else None,
+            'completed_at':      r.completed_at.isoformat() if r.completed_at else None,
+        })
+    return result
+
+
 @app.websocket("/ws/scan/{module}/{target_id}")
 async def scan_log_ws(websocket: WebSocket, module: str, target_id: str):
     """Streaming de logs de un escaneo individual en tiempo real."""

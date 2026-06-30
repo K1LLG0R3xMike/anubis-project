@@ -129,7 +129,9 @@ O vía systemd (recomendado):
 
 ```bash
 systemctl --user start anubis-backend
-systemctl --user start anubis-celery
+systemctl --user start anubis-celery          # light + beat
+systemctl --user start anubis-celery-heavy    # heavy
+systemctl --user start anubis-celery-attack   # attack
 ```
 
 ### Endpoints Completos
@@ -222,13 +224,16 @@ Sin control, lanzar múltiples escaneos desde el frontend (o vía API) encolaba 
 
 #### Solución implementada (3 capas)
 
-**Capa 1 — Dos colas Celery (`celery_app.py`)**
+**Capa 1 — Cuatro colas Celery (`celery_app.py`)**
 
-| Cola | Módulos | Concurrencia recomendada |
-|------|---------|--------------------------|
-| `heavy` | `zap`, `nikto`, `vector_agent` | 2 (slot 1 para ZAP/Nikto, slot 2 libre para vector agent tasks) |
-| `light` | `waf`, `whatweb`, `headers`, `certs` | 2 (worker general) |
-| `beat` | `check_and_run_schedules` | — |
+| Cola | Módulos | Concurrencia recomendada | Servicio systemd |
+|------|---------|--------------------------|-------------------|
+| `heavy` | `zap`, `nikto`, `vector_agent` | 2 (slot 1 para ZAP/Nikto, slot 2 libre para vector agent tasks) | `anubis-celery-heavy.service` |
+| `light` | `waf`, `whatweb`, `headers`, `certs` | 2 (worker general) | `anubis-celery.service` (`--queues=light,beat`) |
+| `attack` | `execute_attack_run` (orquestación DAG de Anubis Attack) | 2 | `anubis-celery-attack.service` |
+| `beat` | `check_and_run_schedules` | — | `anubis-celery.service` |
+
+> **Nota**: la cola `attack` existió en el código (`queue="attack"` en `main.py`) antes de tener un worker dedicado — hasta 2026-06-30 ningún proceso la consumía y los attack runs se quedaban en `planned` indefinidamente. El servicio `anubis-celery-attack.service` resuelve esto.
 
 El worker general corre con `worker_concurrency=2`. Para ejecución estrictamente serial de escaneos pesados, arrancar un segundo worker dedicado:
 
@@ -484,9 +489,11 @@ beat_schedule  = {"check-schedules-every-60s": {"task": "tasks.check_and_run_sch
 ### Con systemd (recomendado)
 
 ```bash
-systemctl --user start anubis-backend    # FastAPI en puerto 8000
-systemctl --user start anubis-celery     # Worker Celery + Beat
-systemctl --user start anubis-frontend   # Vite dev server en puerto 5173
+systemctl --user start anubis-backend          # FastAPI en puerto 8000
+systemctl --user start anubis-celery           # Worker cola light + Beat
+systemctl --user start anubis-celery-heavy     # Worker cola heavy (zap, nikto, vector_agent)
+systemctl --user start anubis-celery-attack    # Worker cola attack (execute_attack_run)
+systemctl --user start anubis-frontend         # Vite dev server en puerto 5173
 ```
 
 ### Manual

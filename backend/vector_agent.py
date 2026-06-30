@@ -5,6 +5,7 @@ Loop agente que ejecuta vectores de pentest usando herramientas de Kali Linux.
 import os
 import json
 import re
+import shlex
 import subprocess
 from urllib.parse import urlparse
 
@@ -21,9 +22,17 @@ MAX_OUTPUT_CHARS  = 6000
 ALLOWED_TOOLS = {
     'curl', 'wget', 'sqlmap', 'wfuzz', 'ffuf',
     'nuclei', 'gobuster', 'commix', 'testssl.sh', 'sslyze',
-    'dirb', 'hydra', 'openssl', 'python3', 'python',
+    'dirb', 'hydra', 'openssl',
     'grep', 'cat', 'echo', 'head', 'wpscan',
 }
+# 'python'/'python3' deliberadamente excluidos: un intérprete de propósito general
+# anula por completo el sentido de la allowlist (red, filesystem, subprocess sin
+# restricción). El SYSTEM_PROMPT_BASE tampoco los lista como herramienta disponible.
+
+# Operadores de control de shell — cualquier comando se parte en estos puntos y
+# CADA sub-comando resultante debe empezar con una herramienta de ALLOWED_TOOLS.
+# Esto cierra el bypass de "el primer token pasa, lo que vaya después de ; && || & no se valida".
+CONTROL_OPERATORS = {';', '&&', '||', '|', '&'}
 
 FORBIDDEN_PATTERNS = [
     r'\brm\s+-',
@@ -240,19 +249,86 @@ ESCALADA DE EVIDENCIA EN ESTE MODO:
 
 # ── Validación de seguridad ───────────────────────────────────────────────────
 
+def _split_command_segments(cmd: str) -> tuple:
+    """Tokeniza respetando comillas (shlex) y separa en sub-comandos por operadores
+    de control de shell (; && || |). Retorna (segments, has_background) — has_background
+    indica si apareció un '&' suelto (no '&&'), que envía el proceso a segundo plano y
+    así evade por completo el timeout de subprocess.run()."""
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+
+    has_background = '&' in tokens  # shlex ya distingue '&' de '&&' como tokens separados
+    segments = [[]]
+    for tok in tokens:
+        if tok in CONTROL_OPERATORS:
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+    return [seg for seg in segments if seg], has_background
+
+
+# Herramientas que leen archivos por ruta — deben restringirse a /tmp (cwd de
+# ejecución) para no poder asomarse al filesystem del propio host del agente.
+FILE_READING_TOOLS = {'cat', 'head', 'grep'}
+
+
 def validate_command(cmd: str, target_url: str) -> tuple:
     """Retorna (es_seguro: bool, razon: str)"""
     cmd = cmd.strip()
     if not cmd:
         return False, "Comando vacío"
 
+    if '\n' in cmd or '\r' in cmd:
+        return False, "Comandos multilínea no permitidos"
+
+    # $(), ``, <(), >() permiten ejecutar comandos arbitrarios embebidos en un
+    # argumento — ningún validador basado en "primer token" los detecta.
+    if '$(' in cmd or '`' in cmd or '<(' in cmd or '>(' in cmd:
+        return False, "Sustitución/composición de comandos no permitida ($(), ``, <(), >())"
+
     for pattern in FORBIDDEN_PATTERNS:
         if re.search(pattern, cmd, re.IGNORECASE):
             return False, f"Patrón prohibido detectado: {pattern}"
 
-    first_word = cmd.split()[0].split('/')[-1]
-    if first_word not in ALLOWED_TOOLS:
-        return False, f"Herramienta '{first_word}' no está en la lista permitida"
+    try:
+        segments, has_background = _split_command_segments(cmd)
+    except ValueError as e:
+        return False, f"Comando malformado (comillas sin cerrar): {e}"
+
+    if has_background:
+        return False, "Ejecución en segundo plano ('&') no permitida — evade el timeout del comando"
+
+    if not segments:
+        return False, "Comando vacío"
+
+    # Cada sub-comando separado por ; && || | debe empezar con una herramienta
+    # permitida — antes solo se validaba el primer token de TODO el comando, así
+    # que "curl url; cat /etc/shadow" o "curl url && python3 -c ..." pasaban.
+    for seg in segments:
+        first_word = seg[0].split('/')[-1]
+        if first_word not in ALLOWED_TOOLS:
+            return False, f"Herramienta '{first_word}' no está en la lista permitida"
+
+        # cat/head/grep solo pueden leer dentro de /tmp — si no, son una puerta
+        # abierta a leer cualquier archivo del filesystem del host del agente.
+        if first_word in FILE_READING_TOOLS:
+            for arg in seg[1:]:
+                if arg.startswith('/') and not arg.startswith('/tmp'):
+                    return False, f"'{first_word}' no puede leer rutas fuera de /tmp: {arg}"
+
+    # Redirecciones (> / >>) a rutas absolutas fuera de /tmp (cwd de ejecución).
+    for m in re.finditer(r'>{1,2}\s*(\S+)', cmd):
+        dest = m.group(1)
+        if dest.startswith('/') and not dest.startswith('/tmp'):
+            return False, f"Redirección a ruta fuera de /tmp no permitida: {dest}"
+
+    # Límites duros de sqlmap — el system prompt los pide pero antes nada los hacía cumplir.
+    if re.search(r'\bsqlmap\b', cmd, re.IGNORECASE):
+        for flag, limit in (('threads', 5), ('level', 3), ('risk', 2)):
+            m = re.search(rf'--{flag}[= ](\d+)', cmd, re.IGNORECASE)
+            if m and int(m.group(1)) > limit:
+                return False, f"sqlmap --{flag} supera el límite permitido ({limit})"
 
     return True, ""
 
@@ -366,8 +442,34 @@ Inicia el análisis. Responde en JSON estricto."""
         reasoning = step.get('razonamiento', '')
         publish_fn(f"[IA] {reasoning[:400]}{'...' if len(reasoning) > 400 else ''}")
 
-        if action == 'finalizar' or 'resultado_final' in step:
-            final_result = step.get('resultado_final') or {}
+        # Gemini incluye "resultado_final": null como placeholder incluso cuando
+        # accion="ejecutar_comando" (contra lo que pide el prompt). Comprobar solo
+        # "la clave existe" (`'resultado_final' in step`) hacía que CUALQUIER
+        # respuesta cayera en la rama de finalizar y descartaba el comando real
+        # que la IA sí proponía — por eso el agente nunca llegaba a ejecutar nada.
+        # Hay que exigir contenido (truthy), no solo presencia de la clave.
+        if action == 'finalizar' or step.get('resultado_final'):
+            candidate = step.get('resultado_final') or {}
+            if not candidate.get('estado') or not candidate.get('resumen'):
+                # La IA dijo "finalizar" pero no entregó un resultado_final usable
+                # (típicamente un corte de tokens a mitad de generación). Si lo
+                # aceptamos tal cual, el run muere en la 1ª iteración con un
+                # "inconcluso" vacío y un log engañoso de "límite de iteraciones
+                # alcanzado". En vez de eso, se lo devolvemos como feedback y
+                # dejamos que reintente dentro del presupuesto de iteraciones.
+                publish_fn("[WARN] La IA indicó 'finalizar' sin un resultado_final completo (falta 'estado' o 'resumen') — se le pide reintentar")
+                history.append({
+                    'iter': iterations,
+                    'reasoning': reasoning,
+                    'tool': step.get('herramienta', '?'),
+                    'cmd': '(sin comando — intento de finalizar incompleto)',
+                    'output': '[SISTEMA] Tu respuesta anterior tenía accion="finalizar" pero "resultado_final" estaba vacío o incompleto. '
+                              'Si ya puedes concluir, responde de nuevo con "resultado_final" completo (estado + resumen como mínimo). '
+                              'Si aún necesitas ejecutar algo, usa accion="ejecutar_comando".',
+                })
+                continue
+
+            final_result = candidate
             estado = final_result.get('estado', 'inconcluso')
             icons = {'explotable': '⚠ EXPLOTABLE', 'no_explotable': '✓ NO EXPLOTABLE', 'inconcluso': '? INCONCLUSO'}
             publish_fn(f"\n[RESULTADO] {icons.get(estado, estado.upper())}")
@@ -376,8 +478,18 @@ Inicia el análisis. Responde en JSON estricto."""
 
         cmd = step.get('comando', '').strip()
         if not cmd:
-            publish_fn("[WARN] IA no proporcionó comando — finalizando iteración")
-            break
+            # Igual que arriba: no tirar la toalla en la 1ª iteración — devolver
+            # el problema a la IA y dejarla reintentar con el presupuesto restante.
+            publish_fn("[WARN] IA no proporcionó comando — se le pide reintentar")
+            history.append({
+                'iter': iterations,
+                'reasoning': reasoning,
+                'tool': step.get('herramienta', '?'),
+                'cmd': '(vacío)',
+                'output': '[SISTEMA] No incluiste "comando" en tu respuesta. Si quieres ejecutar algo usa accion="ejecutar_comando" '
+                          'con un "comando" no vacío; si ya tienes conclusión, usa accion="finalizar" con "resultado_final" completo.',
+            })
+            continue
 
         safe, reason = validate_command(cmd, target_url)
         if not safe:
