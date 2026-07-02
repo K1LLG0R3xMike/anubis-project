@@ -116,15 +116,25 @@ export default function CeleryMonitorPanel({ onClose }) {
                   ) : (
                     <div className="space-y-1.5">
                       {w.active_tasks.map((t) => (
-                        <div key={t.id} className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-primary/5 border border-primary/15">
-                          <span className="font-mono text-[0.62rem] text-primary font-semibold truncate">{shortTaskName(t.name)}</span>
-                          <span className="font-mono text-[0.55rem] text-on-surface-variant shrink-0">{fmtElapsed(t.elapsed_seconds)}</span>
+                        <div key={t.id} className="px-2 py-1.5 rounded-lg bg-primary/5 border border-primary/15">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[0.62rem] text-primary font-semibold truncate">{t.tool || shortTaskName(t.name)}</span>
+                            <span className="font-mono text-[0.55rem] text-on-surface-variant shrink-0">{fmtElapsed(t.elapsed_seconds)}</span>
+                          </div>
+                          {t.detail && (
+                            <p className="font-mono text-[0.55rem] text-on-surface-variant truncate mt-0.5">{t.detail}</p>
+                          )}
                         </div>
                       ))}
                       {w.reserved_tasks.map((t) => (
-                        <div key={t.id} className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant/15">
-                          <span className="font-mono text-[0.62rem] text-on-surface-variant font-semibold truncate">{shortTaskName(t.name)}</span>
-                          <span className="font-mono text-[0.55rem] text-outline shrink-0 uppercase">en espera</span>
+                        <div key={t.id} className="px-2 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant/15">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[0.62rem] text-on-surface-variant font-semibold truncate">{t.tool || shortTaskName(t.name)}</span>
+                            <span className="font-mono text-[0.55rem] text-outline shrink-0 uppercase">en espera</span>
+                          </div>
+                          {t.detail && (
+                            <p className="font-mono text-[0.55rem] text-outline truncate mt-0.5">{t.detail}</p>
+                          )}
                         </div>
                       ))}
                     </div>

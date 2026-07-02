@@ -359,6 +359,42 @@ def run_individual_scan_endpoint(module: str, request: IndividualScanRequest):
 
 # --- ENDPOINT ESTADO DE CELERY (monitor de workers/colas) ---
 
+_MODULE_TOOL_LABELS = {
+    "waf":     "WAF Detector",
+    "whatweb": "Stack Tecnológico",
+    "headers": "HTTP Headers",
+    "certs":   "SSL Scan",
+    "nikto":   "Nikto Vulns",
+    "zap":     "OWASP ZAP",
+}
+
+def _describe_task(name, args):
+    args = args or []
+    if name == "tasks.run_full_scan":
+        mod = args[0] if args else None
+        return _MODULE_TOOL_LABELS.get(mod, mod), "todos los targets"
+    if name == "tasks.run_individual_scan":
+        mod = args[0] if len(args) > 0 else None
+        url = args[1] if len(args) > 1 else None
+        return _MODULE_TOOL_LABELS.get(mod, mod), url
+    if name == "tasks.run_sequential_scan":
+        mod  = args[0] if len(args) > 0 else None
+        urls = args[1] if len(args) > 1 else []
+        n = len(urls) if isinstance(urls, list) else 0
+        return _MODULE_TOOL_LABELS.get(mod, mod), f"{n} target(s)"
+    if name == "tasks.execute_attack_run":
+        run_id = args[0] if args else None
+        return "Anubis Attack (DAG)", f"run #{run_id}" if run_id is not None else None
+    if name == "tasks.run_vector_agent_task":
+        run_id = args[0] if args else None
+        return "Vector Agent IA", f"run #{run_id}" if run_id is not None else None
+    if name == "tasks.analyze_report_with_ai":
+        report_id = args[0] if args else None
+        return "Análisis IA (Gemini)", f"report #{report_id}" if report_id is not None else None
+    if name == "tasks.check_and_run_schedules":
+        return "Scheduler", None
+    return (name.split(".")[-1] if name else None), None
+
 @app.get("/system/celery-status")
 def get_celery_status():
     from celery_app import celery_app as _celery
@@ -373,10 +409,15 @@ def get_celery_status():
 
     def _task_view(t):
         started = t.get("time_start")
+        name = t.get("name")
+        args = t.get("args") or []
+        tool, detail = _describe_task(name, args)
         return {
             "id": t.get("id"),
-            "name": t.get("name"),
-            "args": t.get("args") or [],
+            "name": name,
+            "tool": tool,
+            "detail": detail,
+            "args": args,
             "kwargs": t.get("kwargs") or {},
             "elapsed_seconds": round(now - started, 1) if started else None,
         }
