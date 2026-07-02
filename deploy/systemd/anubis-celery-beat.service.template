@@ -1,0 +1,12 @@
+[Unit]
+Description=AnubisProject Celery Beat (scheduler — publishes tasks.check_and_run_schedules every 60s)
+After=network.target anubis-celery.service
+
+[Service]
+WorkingDirectory=__APP_DIR__/backend
+ExecStart=__APP_DIR__/backend/venv/bin/celery -A celery_app beat --loglevel=info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

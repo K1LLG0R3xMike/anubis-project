@@ -1,0 +1,12 @@
+[Unit]
+Description=AnubisProject Celery Worker (light queue — waf, whatweb, headers, certs)
+After=network.target
+
+[Service]
+WorkingDirectory=__APP_DIR__/backend
+ExecStart=__APP_DIR__/backend/venv/bin/celery -A celery_app worker --loglevel=info --concurrency=2 --queues=light,beat --hostname=light@%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

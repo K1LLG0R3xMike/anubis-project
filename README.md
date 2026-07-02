@@ -486,6 +486,16 @@ beat_schedule  = {"check-schedules-every-60s": {"task": "tasks.check_and_run_sch
 
 ## Servicios Requeridos y Arranque
 
+### Instalación en un equipo nuevo
+
+Clonar el repo NO configura Celery/Redis/systemd automáticamente — eso vive fuera de git (unit files en `~/.config/systemd/user/`, Redis del sistema, `.env` con credenciales). Para levantar todo de una en una máquina nueva (con Redis, Python 3.11+ y Node ya instalados):
+
+```bash
+./deploy/install.sh
+```
+
+El script crea el venv del backend, instala `backend/requirements.txt`, corre `npm install` en el frontend, copia `backend/.env.example` a `backend/.env` (hay que completar las credenciales a mano) y genera + habilita los 6 servicios `systemd --user` (`anubis-backend`, `anubis-frontend`, `anubis-celery`, `anubis-celery-heavy`, `anubis-celery-attack`, `anubis-celery-beat`) a partir de los templates en `deploy/systemd/`.
+
 ### Con systemd (recomendado)
 
 ```bash

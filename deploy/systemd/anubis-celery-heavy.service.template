@@ -1,0 +1,12 @@
+[Unit]
+Description=AnubisProject Celery Worker (heavy queue — zap, nikto; concurrency=2)
+After=network.target anubis-celery.service
+
+[Service]
+WorkingDirectory=__APP_DIR__/backend
+ExecStart=__APP_DIR__/backend/venv/bin/celery -A celery_app worker --loglevel=info --concurrency=2 --queues=heavy --hostname=heavy@%h
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

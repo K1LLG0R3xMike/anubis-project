@@ -1,0 +1,13 @@
+[Unit]
+Description=AnubisProject Frontend (vite dev)
+After=network.target
+
+[Service]
+WorkingDirectory=__APP_DIR__/frontend
+Environment=NODE_OPTIONS=--openssl-legacy-provider
+ExecStart=__NPM_BIN__ run dev -- --host
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
