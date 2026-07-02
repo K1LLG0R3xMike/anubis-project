@@ -388,7 +388,8 @@ def check_and_run_schedules():
                 except Exception:
                     module_list = [raw] if raw else []
                 for mod in module_list:
-                    run_sequential_scan.delay(mod, target_urls)
+                    queue = "heavy" if mod in ("zap", "nikto") else "light"
+                    run_sequential_scan.apply_async(args=[mod, target_urls], queue=queue)
                 print(f"[Beat] Lanzados {len(module_list)} módulo(s) sobre {len(target_urls)} target(s)")
 
             # Limpiar o marcar según repetición

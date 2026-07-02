@@ -129,24 +129,6 @@ export default function AttackTargets() {
   const [targetSeverity, setTargetSeverity]   = useState({});
   const [findingsLoading, setFindingsLoading] = useState(false);
 
-  // ── Scan terminal ─────────────────────────────────────────────────────────
-  const [scanTerminalModule, setScanTerminalModule] = useState(null); // 'zap'|'nikto'|etc
-  const [scanTerminalTargetId, setScanTerminalTargetId] = useState(null);
-
-  const launchScan = useCallback(async (module) => {
-    if (!selected) return;
-    setScanTerminalModule(module);
-    setScanTerminalTargetId(selected.id);
-    try {
-      await axios.post(`${BASE}/run-individual/${module}`, {
-        url: selected.url,
-        target_id: selected.id,
-      });
-    } catch (e) {
-      if (e.response?.status !== 409) console.error(e);
-    }
-  }, [selected]);
-
   // ── AI Attack Plan ────────────────────────────────────────────────────────
   const [aiPlan, setAiPlan]               = useState(null);
   const [aiPlanLoading, setAiPlanLoading] = useState(false);
@@ -579,42 +561,6 @@ export default function AttackTargets() {
                         </form>
                       )}
                     </div>
-                  </div>
-
-                  {/* ── Scan Logs ─────────────────────────────────────────── */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-[9px] font-bold uppercase tracking-[0.2em]"
-                         style={{ color: 'rgba(255,255,255,0.25)' }}>scan_logs</p>
-                      <div className="flex gap-1.5">
-                        {['zap', 'nikto', 'headers', 'waf'].map(mod => (
-                          <button key={mod}
-                            onClick={() => launchScan(mod)}
-                            className="px-2 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all hover:brightness-125"
-                            style={{
-                              background: scanTerminalModule === mod && scanTerminalTargetId === t.id
-                                ? 'rgba(255,49,49,0.25)' : 'rgba(255,255,255,0.05)',
-                              border: scanTerminalModule === mod && scanTerminalTargetId === t.id
-                                ? '1px solid rgba(255,49,49,0.5)' : '1px solid rgba(255,255,255,0.1)',
-                              color: scanTerminalModule === mod && scanTerminalTargetId === t.id
-                                ? R.primary : 'rgba(255,255,255,0.35)',
-                            }}>
-                            {mod}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {scanTerminalModule && scanTerminalTargetId === t.id ? (
-                      <LiveTerminal
-                        runId={`${scanTerminalModule}-${t.id}`}
-                        wsUrl={`${WS_BASE}/ws/scan/${scanTerminalModule}/${t.id}`}
-                      />
-                    ) : (
-                      <div className="rounded-xl px-4 py-3 text-[10px] font-mono text-center"
-                           style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.2)' }}>
-                        Selecciona un módulo para ver los logs en vivo
-                      </div>
-                    )}
                   </div>
 
                 </div>

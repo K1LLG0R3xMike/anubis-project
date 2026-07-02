@@ -187,7 +187,36 @@ def delete_target(target_id: int, db: Session = Depends(database.get_db)):
     target = db.query(models.Target).filter(models.Target.id == target_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="Objetivo no encontrado")
-    url_a_borrar = target.url.strip() 
+    url_a_borrar = target.url.strip()
+
+    # Cascade delete: target_id no es una FK real en el esquema, así que hay
+    # que limpiar a mano cada tabla que lo referencia para no dejar huérfanos.
+    db.query(models.Finding).filter(models.Finding.target_id == target_id).delete()
+    db.query(models.VectorRun).filter(models.VectorRun.target_id == target_id).delete()
+    db.query(models.AiAttackPlan).filter(models.AiAttackPlan.target_id == target_id).delete()
+
+    run_ids = [r.id for r in db.query(AttackRun.id).filter(AttackRun.target_id == target_id).all()]
+    if run_ids:
+        db.query(AttackResult).filter(AttackResult.run_id.in_(run_ids)).delete(synchronize_session=False)
+        db.query(AttackRun).filter(AttackRun.id.in_(run_ids)).delete(synchronize_session=False)
+
+    # Schedule puede apuntar a varios targets a la vez (target_ids JSON); solo
+    # se borra el schedule completo si este era el único target, si no se le
+    # quita la referencia y se conserva para los demás.
+    schedules = db.query(models.Schedule).filter(
+        (models.Schedule.target_id == target_id) | (models.Schedule.target_ids.isnot(None))
+    ).all()
+    for s in schedules:
+        ids = json.loads(s.target_ids) if s.target_ids else ([s.target_id] if s.target_id else [])
+        if target_id not in ids:
+            continue
+        ids = [i for i in ids if i != target_id]
+        if not ids:
+            db.delete(s)
+        else:
+            s.target_ids = json.dumps(ids)
+            s.target_id = ids[0]
+
     db.delete(target)
     db.commit()
 
