@@ -197,6 +197,14 @@ Valores válidos de `module`: `waf`, `whatweb`, `headers`, `certs`, `nikto`, `za
 
 Valores de `repeat`: `"once"`, `"daily"`, `"weekly"`, `"monthly"`
 
+#### Sistema
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `GET` | `/system/celery-status` | Estado en vivo de los workers Celery: por cada hostname (`light@`, `heavy@`, `attack@`) devuelve si está online, sus tareas activas (con `elapsed_seconds`) y las reservadas/en espera. Usa `celery_app.control.inspect()` con timeout de 2s. |
+
+Consumido por el panel **Estado de Workers** (`frontend/src/components/CeleryMonitorPanel.jsx`), que aparece en `Targets` a la derecha de la vista de lista tras lanzar un escaneo — hace polling cada 3s.
+
 ### Tareas Celery (`tasks.py`)
 
 ```python
@@ -296,7 +304,7 @@ El estado de modo vive en `ModeContext.jsx` y es accesible en cualquier componen
 |------|---------|---------------|
 | `/login` | `Login.jsx` | Login. Credenciales: `admin` / `anubis2026` |
 | `/dashboard` | `Dashboard.jsx` / `AttackDashboard.jsx` | KPIs, targets, hallazgos (varía según modo) |
-| `/targets` | `Targets.jsx` | CRUD targets, escaneo por módulo, subida de scripts |
+| `/targets` | `Targets.jsx` | CRUD targets, escaneo por módulo, subida de scripts, monitor de workers Celery al lanzar un escaneo |
 | `/findings` | `Findings.jsx` | Findings por target y módulo con severidad |
 | `/historical` | `Historical.jsx` | Timeline histórico, comparación antes/después |
 | `/schedule` | `Schedule.jsx` | Calendario, schedules recurrentes multi-módulo |

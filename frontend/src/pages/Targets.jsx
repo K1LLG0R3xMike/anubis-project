@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import CeleryMonitorPanel from '../components/CeleryMonitorPanel';
 
 const BASE = 'http://127.0.0.1:8000';
 
@@ -47,6 +48,7 @@ export default function Targets() {
   const [launchedModules, setLaunchedModules] = useState({});
   const [selectedScanModules, setSelectedScanModules] = useState([]);
   const [viewMode, setViewMode]             = useState('grid');
+  const [showMonitor, setShowMonitor]       = useState(false);
   const [modalTab, setModalTab]             = useState('manual');
   const [bulkEntries, setBulkEntries]       = useState([]);
   const [bulkImporting, setBulkImporting]   = useState(false);
@@ -137,8 +139,12 @@ export default function Targets() {
 
   const handleLaunchSelected = async () => {
     if (selectedScanModules.length === 0) return;
+    const targetUrl = scanModal.url;
+    setScanModal(null);
+    setViewMode('list');
+    setShowMonitor(true);
     for (const modId of selectedScanModules) {
-      await handleRunScanFromModal(modId, scanModal.url);
+      await handleRunScanFromModal(modId, targetUrl);
     }
   };
 
@@ -338,7 +344,8 @@ export default function Targets() {
 
           {/* ── List view ── */}
           {viewMode === 'list' && (
-            <div className="rounded-2xl border border-outline-variant/20 overflow-hidden">
+          <div className="flex flex-col lg:flex-row gap-5 items-start">
+            <div className="flex-1 min-w-0 w-full rounded-2xl border border-outline-variant/20 overflow-hidden">
               {targets.length === 0 && (
                 <div className="py-20 text-center border-2 border-dashed border-outline-variant/20 rounded-2xl">
                   <span className="material-symbols-outlined text-5xl text-outline mb-3 block">radar</span>
@@ -388,6 +395,8 @@ export default function Targets() {
                 </div>
               ))}
             </div>
+            {showMonitor && <CeleryMonitorPanel onClose={() => setShowMonitor(false)} />}
+          </div>
           )}
         </>
       )}

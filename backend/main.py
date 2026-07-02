@@ -14,6 +14,7 @@ import json
 import shutil
 import hashlib
 import redis as redis_lib
+import time
 from io import BytesIO
 from fastapi import APIRouter, BackgroundTasks
 
@@ -354,6 +355,51 @@ def run_individual_scan_endpoint(module: str, request: IndividualScanRequest):
         "task_id": task.id,
         "queue": queue,
         "log_channel": f"anubis:scan:{module}:{request.target_id or hashlib.md5(request.url.encode()).hexdigest()[:8]}",
+    }
+
+# --- ENDPOINT ESTADO DE CELERY (monitor de workers/colas) ---
+
+@app.get("/system/celery-status")
+def get_celery_status():
+    from celery_app import celery_app as _celery
+    insp = _celery.control.inspect(timeout=2)
+    active    = insp.active() or {}
+    reserved  = insp.reserved() or {}
+    scheduled = insp.scheduled() or {}
+    stats     = insp.stats() or {}
+
+    hostnames = sorted(set(active) | set(reserved) | set(scheduled) | set(stats))
+    now = time.time()
+
+    def _task_view(t):
+        started = t.get("time_start")
+        return {
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "args": t.get("args") or [],
+            "kwargs": t.get("kwargs") or {},
+            "elapsed_seconds": round(now - started, 1) if started else None,
+        }
+
+    workers = []
+    for host in hostnames:
+        workers.append({
+            "hostname": host,
+            "queue": host.split("@")[0],
+            "status": "online",
+            "active_tasks": [_task_view(t) for t in active.get(host, [])],
+            "reserved_tasks": [_task_view(t) for t in reserved.get(host, [])],
+            "scheduled_tasks": [_task_view(t["request"]) for t in scheduled.get(host, [])],
+        })
+
+    return {
+        "online": len(workers) > 0,
+        "workers": workers,
+        "totals": {
+            "workers_online": len(workers),
+            "active_tasks": sum(len(w["active_tasks"]) for w in workers),
+            "reserved_tasks": sum(len(w["reserved_tasks"]) for w in workers),
+        },
     }
 
 # --- ENDPOINTS DE HISTÓRICO Y COMPARACIÓN ---
