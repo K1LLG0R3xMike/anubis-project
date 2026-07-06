@@ -149,7 +149,9 @@ systemctl --user start anubis-celery-attack   # attack
 |--------|------|------|-------------|
 | `GET` | `/targets/` | — | Lista todos los targets |
 | `POST` | `/targets/` | `{name, url}` | Crea un target |
-| `DELETE` | `/targets/{id}` | — | Elimina un target |
+| `DELETE` | `/targets/{id}` | — | Elimina un target (cascade delete, ver nota) |
+
+> **Cascade delete**: al borrar un target se limpian en cascada sus `Finding`, `VectorRun`, `AiAttackPlan` y `AttackRun`/`AttackResult` asociados. Los `Schedule` que incluyen ese target junto con otros solo pierden la referencia (no se borran); si el target era el único del schedule, el schedule se elimina. Antes de este fix (2026-07-02) quedaban registros huérfanos apuntando a un `target_id` inexistente.
 
 #### Escaneos (lanzan tarea Celery)
 
@@ -305,7 +307,7 @@ El estado de modo vive en `ModeContext.jsx` y es accesible en cualquier componen
 | `/login` | `Login.jsx` | Login. Credenciales: `admin` / `anubis2026` |
 | `/dashboard` | `Dashboard.jsx` / `AttackDashboard.jsx` | KPIs, targets, hallazgos (varía según modo) |
 | `/targets` | `Targets.jsx` | CRUD targets, escaneo por módulo, subida de scripts, monitor de workers Celery al lanzar un escaneo |
-| `/findings` | `Findings.jsx` | Findings por target y módulo con severidad |
+| `/findings` | `Findings.jsx` | Findings por target y módulo con severidad. Las tablas de ZAP y Nikto colapsan los hallazgos Low/Informational detrás de un botón "Ver N hallazgos de severidad baja / informativa" (2026-07-06), mostrando por defecto solo Medium/High/Critical |
 | `/historical` | `Historical.jsx` | Timeline histórico, comparación antes/después |
 | `/schedule` | `Schedule.jsx` | Calendario, schedules recurrentes multi-módulo |
 | `/reports` | `Reports.jsx` | Generación, listado, descarga PDF/DOCX, análisis IA |
@@ -343,6 +345,10 @@ Cada script sigue el mismo patrón:
 | `zap` | OWASP ZAP API | Vulnerabilidades OWASP Top 10 |
 | `kiterunner` | `kiterunner` | Descubrimiento de endpoints de API |
 
+### Extracción de evidencia en alertas de ZAP (2026-07-06)
+
+`run_zap_engine()` deduplica alertas por `alert-risk-param` (antes era solo `alert-risk`, lo que descartaba alertas distintas del mismo tipo con distinto parámetro afectado). Para el campo `evidencia`, `_extract_evidencia()` en `owasp.py` resuelve un fallback cuando ZAP no llena `evidence` (pasa en reglas activas basadas en timing/errores, como Path Traversal o SQLi): prioriza el payload real enviado (`attack` + `param`), luego el campo `other` (explicación técnica de ZAP, ej. condiciones booleanas probadas), y por último la URL desnuda. Antes esos casos quedaban como `"N/A"`.
+
 ### Control de concurrencia en OWASP ZAP
 
 ZAP lanza instancias de Firefox headless (vía GeckoDriver) durante el active scan. Sin límite, un escaneo multi-target puede acumular decenas de procesos Firefox en `/tmp` y llenar la partición.
@@ -358,36 +364,43 @@ Esto limita a un máximo de ~4 instancias de Firefox activas simultáneamente, r
 
 ---
 
-### Script de limpieza de `/tmp` y reinicio seguro de Celery
+### Script de limpieza de `/tmp` y reinicio seguro del worker heavy
 
 **Archivo**: `scripts/cleanup_tmp.sh`
-**Ejecución**: cron job cada 5 minutos (`*/5 * * * *`)
+**Ejecución**: cron job cada 5 minutos (`*/5 * * * *`) — solo actúa si `/tmp` supera el umbral; en el resto de corridas sale sin loguear nada.
 
 Segunda línea de defensa para el caso en que `/tmp` supere el 90% de uso a pesar del límite de concurrencia de ZAP.
+
+#### Por qué existe
+
+ZAP mantiene un daemon Java persistente entre escaneos (`anubis-celery-heavy` lo lanza como subproceso la primera vez y lo reutiliza, para no pagar el arranque de la JVM en cada scan). Cuando ese daemon queda en un estado colgado — se observó tras el incidente del 2026-07-02 en que `/tmp` se llenó a mitad de un active scan — sigue abriendo y matando sesiones de Firefox/GeckoDriver por su cuenta cada pocos minutos, **sin que haya ningún escaneo real en curso** (confirmado vía `/system/celery-status` y la API de ZAP: spider/ajaxSpider/ascan en `FINISHED`/`stopped`). Matar solo los procesos `firefox-esr`/`geckodriver` no alcanza: el daemon Java sigue vivo y regenera más en minutos, por eso el script fue corregido el 2026-07-06 para atacar también al proceso ZAP.
 
 #### Flujo de intervención
 
 ```
 /tmp > 90%
     │
-    ├─ Celery tiene tareas activas?
-    │       └─ Sí → vaciar cola de tareas pendientes (purge)
+    ├─ ¿Cola heavy (zap/nikto) tiene tareas activas?
+    │       └─ Sí → vaciar solo la cola heavy (purge -Q heavy)
     │               esperar 15s para drenaje de tareas en curso
     │
-    ├─ Matar procesos firefox-esr y geckodriver huérfanos
+    ├─ Matar el daemon Java de ZAP (causa raíz) y los procesos
+    │   firefox-esr / geckodriver huérfanos que dependían de él
     │
     ├─ Limpiar artefactos de /tmp:
     │       rust_mozprofile* / userprofile*copy /
     │       anonymous*webdriver-profile / selenium-manager* / pymp-*
     │
-    └─ Reiniciar servicio anubis-celery vía systemd
+    └─ Reiniciar anubis-celery-heavy vía systemd
 ```
 
 #### Consideraciones
 
-- Las tareas activas de ZAP/Nikto **se interrumpen** cuando se matan sus procesos Firefox. La intervención es equivalente a un abort manual — el scan queda incompleto pero el worker Celery se recupera limpiamente.
+- Las tareas activas de ZAP/Nikto **se interrumpen** cuando se mata el daemon. La intervención es equivalente a un abort manual — el scan queda incompleto pero el worker se recupera limpio y arranca un daemon ZAP nuevo en el siguiente escaneo.
+- El chequeo de tareas activas y el `purge` están acotados a la cola `heavy` — no toca tareas pendientes en `light`/`attack`/`beat`.
+- El script exporta `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS` antes de invocar `systemctl --user`: cron no hereda el bus de sesión del usuario, y sin esas variables el comando fallaba silenciosamente (el reinicio nunca se ejecutaba, aunque el log lo reportara como intentado).
 - El script registra cada acción en `logs/cleanup_tmp.log` con timestamp.
-- Si el servicio `anubis-celery` no estaba activo, se omite el reinicio y se loguea una advertencia.
+- Si el servicio `anubis-celery-heavy` no estaba activo, se omite el reinicio y se loguea una advertencia.
 
 #### Activación manual
 
@@ -590,6 +603,15 @@ El agente genera un Markdown con 6 secciones:
 # 5. RESUMEN DE HALLAZGOS  ← tabla Markdown
 # 6. CONCLUSIONES
 ```
+
+### Distinción "módulo no ejecutado" vs "sin hallazgos" (2026-07-06)
+
+Antes de este fix, una lista de findings vacía era ambigua: podía significar "el módulo corrió y no encontró nada" o "el módulo nunca se ejecutó sobre este target", y la IA a veces inventaba un resultado positivo para el segundo caso. La solución:
+
+- `scripts/waf.py` / `script_induvidual/waf.py` ahora persisten `waf_detected` en la tabla `targets` cuando corre wafw00f (antes solo actualizaban `status`).
+- `scripts/certs.py` / `script_induvidual/certs.py` ahora guardan un finding informativo ("sin protocolos inseguros detectados") cuando testssl.sh corre limpio, en vez de dejar la lista vacía.
+- `_build_prompt()` en `ai_agent.py` inserta un marcador explícito `NOT_RUN_MARKER` en el bloque de datos de WAF/certs cuando de verdad no hay dato. El prompt instruye a la IA: si ve ese marcador debe reportar **"NO EVALUADO"** / estado `➖` en la tabla resumen — nunca inventar un resultado positivo o negativo.
+- El resto de módulos (headers, ZAP, Nikto, WhatWeb, Kiterunner) no usan este marcador: para ellos una lista vacía sigue significando legítimamente "corrió y no encontró nada".
 
 ### Fallback de API keys Gemini
 
@@ -1141,11 +1163,16 @@ El agente está concebido exclusivamente como módulo de **explotación**. El re
 
 #### Validación de seguridad
 
-Antes de ejecutar cualquier comando, `validate_command()` verifica:
-1. El primer token del comando está en `ALLOWED_TOOLS`
-2. El comando no contiene patrones prohibidos (`rm -`, `dd`, `mkfs`, `| bash`, `| sh`, `--os-shell`, etc.)
+`validate_command()` en `vector_agent.py` fue endurecida el 2026-06-30 tras detectar que un validador basado solo en "primer token" dejaba pasar cadenas como `curl url; cat /etc/shadow` o `curl url && python3 -c ...`. Antes de ejecutar cualquier comando verifica, en orden:
 
-Si falla la validación, el agente recibe el error y debe proponer un comando alternativo en la siguiente iteración.
+1. **Sin multilínea** (`\n`/`\r`) y sin sustitución/composición de comandos: `$()`, backticks, `<()`, `>()` — ningún validador de "primer token" las detecta, así que se bloquean directamente por presencia del patrón.
+2. **Patrones prohibidos** vía `FORBIDDEN_PATTERNS` (`rm -`, `dd`, `mkfs`, `| bash`, `| sh`, `--os-shell`, etc.)
+3. **Tokeniza con `shlex`** y separa el comando en sub-comandos por `;`, `&&`, `||`, `|` — **cada uno** debe empezar con una herramienta de `ALLOWED_TOOLS` (ya no solo el primero de toda la cadena). Ejecución en segundo plano (`&`) se rechaza porque evade el timeout.
+4. Herramientas de lectura de archivos (`cat`, `head`, `grep`, ver `FILE_READING_TOOLS`) solo pueden apuntar a rutas dentro de `/tmp` — bloquea leer archivos arbitrarios del host que corre el agente.
+5. Redirecciones (`>`, `>>`) a rutas absolutas fuera de `/tmp` también se rechazan.
+6. Límites duros a `sqlmap`: `--threads` ≤ 5, `--level` ≤ 3, `--risk` ≤ 2 (antes el system prompt los pedía pero nada los hacía cumplir).
+
+Si falla la validación, el agente recibe la razón puntual y debe proponer un comando alternativo en la siguiente iteración.
 
 #### Resultado final
 
