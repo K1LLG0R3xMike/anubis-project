@@ -25,14 +25,18 @@ const PanelHead = ({ icon, sub, title, color = 'text-primary', iconBg = 'bg-prim
   </div>
 );
 
-const SCAN_MODULES = [
-  { id: 'waf',     label: 'WAF Detector',     icon: 'security',      sub: 'firewall_fingerprint', topColor: '#ff6e84', btnCls: 'bg-error hover:brightness-110',     iconBg: 'bg-error/10 border-error/20',         iconColor: 'text-error'     },
-  { id: 'whatweb', label: 'Stack Tecnológico', icon: 'terminal',      sub: 'whatweb_engine',       topColor: '#9aa8ff', btnCls: 'bg-primary hover:brightness-110',   iconBg: 'bg-primary/10 border-primary/20',     iconColor: 'text-primary'   },
-  { id: 'headers', label: 'HTTP Headers',      icon: 'verified_user', sub: 'security_headers',     topColor: '#9aa8ff', btnCls: 'bg-primary hover:brightness-110',   iconBg: 'bg-primary/10 border-primary/20',     iconColor: 'text-primary'   },
-  { id: 'certs',   label: 'SSL Scan',          icon: 'radar',         sub: 'tls_protocols',        topColor: '#ff8f06', btnCls: 'bg-secondary hover:brightness-110', iconBg: 'bg-secondary/10 border-secondary/20', iconColor: 'text-secondary' },
-  { id: 'nikto',   label: 'Nikto Vulns',       icon: 'bug_report',    sub: 'web_server_scan',      topColor: '#ff7161', btnCls: 'bg-tertiary hover:brightness-110',  iconBg: 'bg-tertiary/10 border-tertiary/20',   iconColor: 'text-tertiary'  },
-  { id: 'zap',     label: 'OWASP ZAP',         icon: 'gpp_good',      sub: 'owasp_top_10',         topColor: '#ff6e84', btnCls: 'bg-error hover:brightness-110',     iconBg: 'bg-error/10 border-error/20',         iconColor: 'text-error'     },
-];
+// Estilo curado para los módulos históricos; cualquier módulo detectado que no
+// esté acá (ej. uno agregado a mano en scripts/) cae en DEFAULT_MODULE_STYLE.
+const MODULE_STYLE = {
+  waf:     { icon: 'security',      sub: 'firewall_fingerprint', topColor: '#ff6e84', btnCls: 'bg-error hover:brightness-110',     iconBg: 'bg-error/10 border-error/20',         iconColor: 'text-error'     },
+  whatweb: { icon: 'terminal',      sub: 'whatweb_engine',       topColor: '#9aa8ff', btnCls: 'bg-primary hover:brightness-110',   iconBg: 'bg-primary/10 border-primary/20',     iconColor: 'text-primary'   },
+  headers: { icon: 'verified_user', sub: 'security_headers',     topColor: '#9aa8ff', btnCls: 'bg-primary hover:brightness-110',   iconBg: 'bg-primary/10 border-primary/20',     iconColor: 'text-primary'   },
+  certs:   { icon: 'radar',         sub: 'tls_protocols',        topColor: '#ff8f06', btnCls: 'bg-secondary hover:brightness-110', iconBg: 'bg-secondary/10 border-secondary/20', iconColor: 'text-secondary' },
+  nikto:   { icon: 'bug_report',    sub: 'web_server_scan',      topColor: '#ff7161', btnCls: 'bg-tertiary hover:brightness-110',  iconBg: 'bg-tertiary/10 border-tertiary/20',   iconColor: 'text-tertiary'  },
+  zap:     { icon: 'gpp_good',      sub: 'owasp_top_10',         topColor: '#ff6e84', btnCls: 'bg-error hover:brightness-110',     iconBg: 'bg-error/10 border-error/20',         iconColor: 'text-error'     },
+};
+const DEFAULT_MODULE_STYLE = { icon: 'extension', sub: 'script_detectado', topColor: '#9aa0ac', btnCls: 'bg-outline-variant/60 hover:brightness-110', iconBg: 'bg-outline-variant/10 border-outline-variant/20', iconColor: 'text-on-surface-variant' };
+const getModuleStyle = (id) => MODULE_STYLE[id] || DEFAULT_MODULE_STYLE;
 
 export default function Targets() {
   const navigate = useNavigate();
@@ -57,6 +61,7 @@ export default function Targets() {
   const [scriptDest, setScriptDest]         = useState('individual');
   const [scriptUploading, setScriptUploading] = useState(false);
   const [scriptResult, setScriptResult]     = useState(null);
+  const [scanModules, setScanModules]       = useState([]);
 
   // detail panels
   const [wafDetails, setWafDetails]       = useState(null);
@@ -94,8 +99,25 @@ export default function Targets() {
     ]);
   };
 
+  const fetchScanModules = async () => {
+    try { setScanModules((await axios.get(`${BASE}/system/scan-modules`)).data); }
+    catch (e) { console.error('Error al cargar módulos del Scan Engine:', e); }
+  };
+
+  const handleQueueChange = async (moduleId, queue) => {
+    const prev = scanModules;
+    setScanModules(ms => ms.map(m => m.id === moduleId ? { ...m, queue } : m));
+    try {
+      await axios.put(`${BASE}/system/scan-modules/${moduleId}/queue`, { queue });
+    } catch {
+      setScanModules(prev);
+      alert('No se pudo cambiar la cola del módulo.');
+    }
+  };
+
   useEffect(() => {
     fetchTargets();
+    fetchScanModules();
     const iv = setInterval(fetchTargets, 5000);
     return () => clearInterval(iv);
   }, [selectedTarget?.id]);
@@ -167,6 +189,7 @@ export default function Targets() {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setScriptResult({ ok: true, msg: r.data.message });
+      fetchScanModules();
     } catch (e) {
       setScriptResult({ ok: false, msg: e.response?.data?.detail || 'Error al subir el script' });
     } finally {
@@ -562,24 +585,51 @@ export default function Targets() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {SCAN_MODULES.map((mod) => (
-              <div key={mod.id}
-                className="bg-surface-container-low rounded-2xl border border-outline-variant/20 p-6 border-t-2 transition-all duration-200 hover:-translate-y-0.5"
-                style={{ borderTopColor: mod.topColor }}
-              >
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center border mb-5 ${mod.iconBg}`}>
-                  <span className={`material-symbols-outlined ${mod.iconColor}`} style={{ fontSize: 26 }}>{mod.icon}</span>
-                </div>
-                <p className="font-mono text-[0.6rem] text-on-surface-variant uppercase tracking-[0.18em] mb-1">{mod.sub}</p>
-                <h3 className="font-headline text-lg font-bold text-on-surface mb-5">{mod.label}</h3>
-                <button disabled={loading} onClick={() => handleRunScan(mod.id)}
-                  className={`w-full py-2.5 rounded-lg font-bold text-xs text-background uppercase tracking-[0.08em] transition-all ${mod.btnCls} disabled:opacity-50 disabled:cursor-not-allowed`}
-                  style={{ boxShadow: `0 6px 16px ${mod.topColor}33` }}
+            {scanModules.map((mod) => {
+              const style = getModuleStyle(mod.id);
+              const missing = !mod.in_scripts ? 'scripts/' : !mod.in_individual ? 'script_induvidual/' : null;
+              return (
+                <div key={mod.id}
+                  className="bg-surface-container-low rounded-2xl border border-outline-variant/20 p-6 border-t-2 transition-all duration-200 hover:-translate-y-0.5"
+                  style={{ borderTopColor: style.topColor }}
                 >
-                  › Lanzar
-                </button>
-              </div>
-            ))}
+                  <div className="flex items-start justify-between mb-5">
+                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center border ${style.iconBg}`}>
+                      <span className={`material-symbols-outlined ${style.iconColor}`} style={{ fontSize: 26 }}>{style.icon}</span>
+                    </div>
+                    <div className="flex rounded-lg border border-outline-variant/30 overflow-hidden">
+                      {['light', 'heavy'].map(q => (
+                        <button key={q} onClick={() => handleQueueChange(mod.id, q)}
+                          title={`Cola ${q}`}
+                          className={`px-2 py-1 text-[0.55rem] font-mono uppercase tracking-wider transition-colors ${
+                            mod.queue === q ? 'bg-primary text-on-primary' : 'text-on-surface-variant hover:bg-primary/10'
+                          }`}
+                        >{q}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="font-mono text-[0.6rem] text-on-surface-variant uppercase tracking-[0.18em] mb-1">{mod.id}</p>
+                  <h3 className="font-headline text-lg font-bold text-on-surface mb-2">{mod.label}</h3>
+                  {missing && (
+                    <p className="flex items-center gap-1 text-[0.65rem] text-secondary font-mono mb-3">
+                      <span className="material-symbols-outlined" style={{ fontSize: 13 }}>warning</span>
+                      falta réplica en {missing}
+                    </p>
+                  )}
+                  {!missing && <div className="mb-3" />}
+                  <button disabled={loading || !mod.in_scripts} onClick={() => handleRunScan(mod.id)}
+                    title={!mod.in_scripts ? `Sin script en scripts/ — no disponible para "escanear todos"` : ''}
+                    className={`w-full py-2.5 rounded-lg font-bold text-xs text-background uppercase tracking-[0.08em] transition-all ${style.btnCls} disabled:opacity-40 disabled:cursor-not-allowed`}
+                    style={{ boxShadow: `0 6px 16px ${style.topColor}33` }}
+                  >
+                    › Lanzar
+                  </button>
+                </div>
+              );
+            })}
+            {scanModules.length === 0 && (
+              <p className="col-span-full text-sm text-on-surface-variant font-body">No se detectaron módulos en scripts/ ni script_induvidual/.</p>
+            )}
           </div>
         </div>
       )}
@@ -618,7 +668,8 @@ export default function Targets() {
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              {SCAN_MODULES.map((mod) => {
+              {scanModules.filter(m => m.in_individual).map((mod) => {
+                const style = getModuleStyle(mod.id);
                 const runState = launchedModules[mod.id];
                 const selected = selectedScanModules.includes(mod.id);
                 return (
@@ -633,18 +684,18 @@ export default function Targets() {
                         selected               ? 'border-primary/50 bg-primary/10 ring-1 ring-primary/30' :
                         'border-outline-variant/20 bg-surface-container-lowest hover:border-primary/30 hover:bg-primary/5'}`}
                   >
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center border shrink-0 ${mod.iconBg}`}>
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center border shrink-0 ${style.iconBg}`}>
                       {runState === 'loading'
                         ? <span className="material-symbols-outlined text-on-surface-variant animate-spin" style={{ fontSize: 16 }}>progress_activity</span>
                         : runState === 'done'
                         ? <span className="material-symbols-outlined text-primary" style={{ fontSize: 16 }}>check_circle</span>
                         : runState === 'error'
                         ? <span className="material-symbols-outlined text-error" style={{ fontSize: 16 }}>error</span>
-                        : <span className={`material-symbols-outlined ${mod.iconColor}`} style={{ fontSize: 16 }}>{mod.icon}</span>
+                        : <span className={`material-symbols-outlined ${style.iconColor}`} style={{ fontSize: 16 }}>{style.icon}</span>
                       }
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="font-mono text-[0.6rem] text-on-surface-variant uppercase tracking-[0.12em] leading-none mb-0.5">{mod.sub}</p>
+                      <p className="font-mono text-[0.6rem] text-on-surface-variant uppercase tracking-[0.12em] leading-none mb-0.5">{mod.id}</p>
                       <p className="font-headline text-xs font-bold text-on-surface">{mod.label}</p>
                     </div>
                     {!runState && (

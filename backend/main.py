@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session
 import models, database
 from tasks import run_full_scan, run_individual_scan, analyze_report_with_ai
+from scan_modules import discover_modules, module_label, get_module_queue, set_module_queue
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from typing import List, Optional
@@ -21,8 +22,6 @@ from fastapi import APIRouter, BackgroundTasks
 # ── Cliente Redis para deduplicación de escaneos (db=1, separado del broker Celery) ──
 _scan_redis = redis_lib.Redis(host='localhost', port=6379, db=1, decode_responses=True)
 
-# Módulos que usan Firefox/GeckoDriver — van a la cola 'heavy'
-_HEAVY_MODULES = {"zap", "nikto"}
 # TTL del lock: 90 minutos (safety net si el worker muere sin liberar el lock)
 _LOCK_TTL = 5400
 
@@ -38,20 +37,18 @@ def _acquire_scan_lock(lock_key: str, module: str):
             detail=f"Ya hay un escaneo '{module}' en cola o en curso. Espera a que termine antes de lanzar otro."
         )
 
-def _enqueue_full_scan(module: str):
-    """Valida deduplicación y encola run_full_scan en la cola correcta."""
+def _enqueue_full_scan(module: str, queue: str):
+    """Valida deduplicación y encola run_full_scan en la cola indicada."""
     lock_key = f"anubis:scan_lock:{module}"
     _acquire_scan_lock(lock_key, module)
-    queue = "heavy" if module in _HEAVY_MODULES else "light"
     task = run_full_scan.apply_async(args=[module], queue=queue)
     return task
 
-def _enqueue_individual_scan(module: str, url: str, target_id: int = None):
-    """Valida deduplicación y encola run_individual_scan en la cola correcta."""
+def _enqueue_individual_scan(module: str, url: str, queue: str, target_id: int = None):
+    """Valida deduplicación y encola run_individual_scan en la cola indicada."""
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
     lock_key = f"anubis:scan_lock:individual:{module}:{url_hash}"
     _acquire_scan_lock(lock_key, f"{module}:{url}")
-    queue = "heavy" if module in _HEAVY_MODULES else "light"
     task = run_individual_scan.apply_async(args=[module, url], kwargs={"target_id": target_id}, queue=queue)
     return task
 
@@ -275,14 +272,16 @@ def get_schedules(db: Session = Depends(database.get_db)):
 
 @app.post("/schedules/")
 def create_schedule(schedule: ScheduleCreate, db: Session = Depends(database.get_db)):
-    valid_modules = {"waf", "whatweb", "headers", "certs", "nikto", "zap"}
+    # Los schedules corren vía run_sequential_scan, que ejecuta desde script_induvidual/
+    # — un módulo solo presente en scripts/ (ej. kiterunner) no sirve aquí.
+    modules = discover_modules()
     if not schedule.target_ids:
         raise HTTPException(status_code=400, detail="Debes seleccionar al menos un objetivo")
     if not schedule.modules:
         raise HTTPException(status_code=400, detail="Debes seleccionar al menos un módulo")
-    invalid = [m for m in schedule.modules if m not in valid_modules]
+    invalid = [m for m in schedule.modules if not modules.get(m, {}).get("script_individual")]
     if invalid:
-        raise HTTPException(status_code=400, detail=f"Módulos no reconocidos: {invalid}")
+        raise HTTPException(status_code=400, detail=f"Módulos no reconocidos o sin script en script_induvidual/: {invalid}")
     db_schedule = models.Schedule(
         target_id=schedule.target_ids[0],
         target_ids=json.dumps(schedule.target_ids),
@@ -304,38 +303,17 @@ def delete_schedule(schedule_id: int, db: Session = Depends(database.get_db)):
     db.commit()
     return {"message": "Schedule eliminado"}
 
-# --- ENDPOINTS DE EJECUCI�N DE SCRIPTS ---
-SCRIPTS_DIR = "/home/anubis/AnubisProject/scripts"
-
-@app.post("/run-waf")
-def run_waf_script():
-    task = _enqueue_full_scan("waf")
-    return {"message": "WAF añadido a la cola", "task_id": task.id, "queue": "light"}
-
-@app.post("/run-whatweb")
-def run_whatweb_script():
-    task = _enqueue_full_scan("whatweb")
-    return {"message": "WhatWeb añadido a la cola", "task_id": task.id, "queue": "light"}
-
-@app.post("/run-headers")
-def run_headers_script():
-    task = _enqueue_full_scan("headers")
-    return {"message": "Headers añadido a la cola", "task_id": task.id, "queue": "light"}
-
-@app.post("/run-certs")
-def run_certs_script():
-    task = _enqueue_full_scan("certs")
-    return {"message": "Certs añadido a la cola", "task_id": task.id, "queue": "light"}
-
-@app.post("/run-nikto")
-def run_nikto_script():
-    task = _enqueue_full_scan("nikto")
-    return {"message": "Nikto añadido a la cola heavy", "task_id": task.id, "queue": "heavy"}
-
-@app.post("/run-zap")
-def run_zap_script():
-    task = _enqueue_full_scan("zap")
-    return {"message": "ZAP añadido a la cola heavy", "task_id": task.id, "queue": "heavy"}
+# --- ENDPOINTS DE EJECUCIÓN DE SCRIPTS ---
+# Genérico: cualquier script agregado a scripts/ (vía /upload-script o a mano)
+# queda disponible aquí automáticamente, sin necesitar un endpoint por módulo.
+@app.post("/run-{module}")
+def run_full_scan_endpoint(module: str, db: Session = Depends(database.get_db)):
+    info = discover_modules().get(module)
+    if not info or not info["script_full"]:
+        raise HTTPException(status_code=404, detail=f"Módulo '{module}' no disponible para escaneo de todos los targets (falta el script en scripts/)")
+    queue = get_module_queue(db, module)
+    task = _enqueue_full_scan(module, queue)
+    return {"message": f"{module_label(module)} añadido a la cola {queue}", "task_id": task.id, "queue": queue}
 
 # --- ENDPOINT ESCANEO INDIVIDUAL (desde el cohete en Targets) ---
 
@@ -344,12 +322,12 @@ class IndividualScanRequest(BaseModel):
     target_id: Optional[int] = None
 
 @app.post("/run-individual/{module}")
-def run_individual_scan_endpoint(module: str, request: IndividualScanRequest):
-    valid_modules = {"waf", "whatweb", "headers", "certs", "nikto", "zap"}
-    if module not in valid_modules:
-        raise HTTPException(status_code=400, detail=f"Módulo '{module}' no reconocido")
-    task = _enqueue_individual_scan(module, request.url, request.target_id)
-    queue = "heavy" if module in _HEAVY_MODULES else "light"
+def run_individual_scan_endpoint(module: str, request: IndividualScanRequest, db: Session = Depends(database.get_db)):
+    info = discover_modules().get(module)
+    if not info or not info["script_individual"]:
+        raise HTTPException(status_code=404, detail=f"Módulo '{module}' no disponible para escaneo individual (falta el script en script_induvidual/)")
+    queue = get_module_queue(db, module)
+    task = _enqueue_individual_scan(module, request.url, queue, request.target_id)
     return {
         "message": f"{module.upper()} individual añadido a la cola para {request.url}",
         "task_id": task.id,
@@ -357,31 +335,54 @@ def run_individual_scan_endpoint(module: str, request: IndividualScanRequest):
         "log_channel": f"anubis:scan:{module}:{request.target_id or hashlib.md5(request.url.encode()).hexdigest()[:8]}",
     }
 
-# --- ENDPOINT ESTADO DE CELERY (monitor de workers/colas) ---
+# --- SCAN ENGINE: descubrimiento y configuración de módulos ---
 
-_MODULE_TOOL_LABELS = {
-    "waf":     "WAF Detector",
-    "whatweb": "Stack Tecnológico",
-    "headers": "HTTP Headers",
-    "certs":   "SSL Scan",
-    "nikto":   "Nikto Vulns",
-    "zap":     "OWASP ZAP",
-}
+@app.get("/system/scan-modules")
+def list_scan_modules(db: Session = Depends(database.get_db)):
+    """Módulos detectados en scripts/ y script_induvidual/, con su cola actual
+    y si le falta la réplica en alguna de las dos carpetas."""
+    modules = discover_modules()
+    result = []
+    for mid, info in sorted(modules.items()):
+        result.append({
+            "id": mid,
+            "label": module_label(mid),
+            "queue": get_module_queue(db, mid),
+            "in_scripts": info["script_full"] is not None,
+            "in_individual": info["script_individual"] is not None,
+            "script_full": info["script_full"],
+            "script_individual": info["script_individual"],
+        })
+    return result
+
+class ScanModuleQueueUpdate(BaseModel):
+    queue: str
+
+@app.put("/system/scan-modules/{module_id}/queue")
+def update_scan_module_queue(module_id: str, body: ScanModuleQueueUpdate, db: Session = Depends(database.get_db)):
+    if module_id not in discover_modules():
+        raise HTTPException(status_code=404, detail=f"Módulo '{module_id}' no encontrado")
+    if body.queue not in ("light", "heavy"):
+        raise HTTPException(status_code=400, detail="queue debe ser 'light' o 'heavy'")
+    set_module_queue(db, module_id, body.queue)
+    return {"id": module_id, "queue": body.queue}
+
+# --- ENDPOINT ESTADO DE CELERY (monitor de workers/colas) ---
 
 def _describe_task(name, args):
     args = args or []
     if name == "tasks.run_full_scan":
         mod = args[0] if args else None
-        return _MODULE_TOOL_LABELS.get(mod, mod), "todos los targets"
+        return module_label(mod) if mod else mod, "todos los targets"
     if name == "tasks.run_individual_scan":
         mod = args[0] if len(args) > 0 else None
         url = args[1] if len(args) > 1 else None
-        return _MODULE_TOOL_LABELS.get(mod, mod), url
+        return module_label(mod) if mod else mod, url
     if name == "tasks.run_sequential_scan":
         mod  = args[0] if len(args) > 0 else None
         urls = args[1] if len(args) > 1 else []
         n = len(urls) if isinstance(urls, list) else 0
-        return _MODULE_TOOL_LABELS.get(mod, mod), f"{n} target(s)"
+        return module_label(mod) if mod else mod, f"{n} target(s)"
     if name == "tasks.execute_attack_run":
         run_id = args[0] if args else None
         return "Anubis Attack (DAG)", f"run #{run_id}" if run_id is not None else None
@@ -512,9 +513,9 @@ def compare_findings(
 
 
 # --- ENDPOINT UPLOAD DE SCRIPTS ---
-
-SCRIPTS_FULL_DIR       = "/home/anubis/AnubisProject/scripts"
-SCRIPTS_INDIVIDUAL_DIR = "/home/anubis/AnubisProject/script_induvidual"
+# Un script subido aquí queda disponible en el Scan Engine automáticamente
+# (ver discover_modules() en scan_modules.py) sin reiniciar nada.
+from scan_modules import SCRIPTS_FULL_DIR, SCRIPTS_INDIVIDUAL_DIR
 
 @app.post("/upload-script")
 async def upload_script(

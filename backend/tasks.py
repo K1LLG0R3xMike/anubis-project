@@ -54,19 +54,12 @@ def _stream_subprocess(cmd: list, channel: str, timeout: int = 4500) -> int:
         _log_redis.publish(channel, '[TIMEOUT] Escaneo superó el límite de tiempo')
     return proc.returncode
 
-SCRIPT_MAP = {
-    "waf": "waf.py",
-    "whatweb": "whatweb.py",
-    "headers": "headers.py",
-    "certs": "certs.py",
-    "nikto": "nikto.py",
-    "zap": "owasp.py",
-}
+from scan_modules import discover_modules
 
 @celery_app.task(name="tasks.run_full_scan")
 def run_full_scan(module_type: str):
     scripts_dir = "/home/anubis/AnubisProject/scripts"
-    script_name = SCRIPT_MAP.get(module_type)
+    script_name = discover_modules().get(module_type, {}).get("script_full")
     if not script_name:
         return f"Módulo {module_type} no reconocido"
 
@@ -84,7 +77,7 @@ def run_full_scan(module_type: str):
 @celery_app.task(name="tasks.run_individual_scan")
 def run_individual_scan(module_type: str, target_url: str, target_id: int = None):
     scripts_dir = "/home/anubis/AnubisProject/script_induvidual"
-    script_name = SCRIPT_MAP.get(module_type)
+    script_name = discover_modules().get(module_type, {}).get("script_individual")
     if not script_name:
         return f"Módulo {module_type} no reconocido"
 
@@ -108,7 +101,7 @@ def run_individual_scan(module_type: str, target_url: str, target_id: int = None
 def run_sequential_scan(module_type: str, target_urls: list):
     """Ejecuta un módulo sobre varios targets de forma secuencial (uno tras otro)."""
     scripts_dir = "/home/anubis/AnubisProject/script_induvidual"
-    script_name = SCRIPT_MAP.get(module_type)
+    script_name = discover_modules().get(module_type, {}).get("script_individual")
     if not script_name:
         return f"Módulo {module_type} no reconocido"
 
@@ -332,6 +325,7 @@ def check_and_run_schedules():
     from datetime import datetime, timedelta
     from database import SessionLocal
     from models import Schedule, Target
+    from scan_modules import get_module_queue
 
     db = SessionLocal()
     now = datetime.now()
@@ -388,7 +382,7 @@ def check_and_run_schedules():
                 except Exception:
                     module_list = [raw] if raw else []
                 for mod in module_list:
-                    queue = "heavy" if mod in ("zap", "nikto") else "light"
+                    queue = get_module_queue(db, mod)
                     run_sequential_scan.apply_async(args=[mod, target_urls], queue=queue)
                 print(f"[Beat] Lanzados {len(module_list)} módulo(s) sobre {len(target_urls)} target(s)")
 

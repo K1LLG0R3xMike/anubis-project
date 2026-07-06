@@ -13,6 +13,17 @@ class Target(Base):
     last_scan = Column(DateTime(timezone=True), server_default=func.now())
     waf_detected = Column(String, default="No verificado")
 
+class ScanModuleConfig(Base):
+    """Override de cola por módulo de escaneo, editable desde el Scan Engine.
+    Si no hay fila para un module_id, se usa el default de scan_modules.py
+    (heavy para zap/nikto, light para el resto)."""
+    __tablename__ = "scan_module_configs"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    module_id  = Column(String(50), unique=True, nullable=False)
+    queue      = Column(String(20), nullable=False, default="light")  # light | heavy
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
 class Finding(Base):
     __tablename__ = "findings"
 
