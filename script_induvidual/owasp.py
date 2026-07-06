@@ -5,6 +5,7 @@ import json
 import sys
 import subprocess
 import psycopg2
+import redis
 from urllib.parse import quote
 from datetime import datetime
 
@@ -15,6 +16,7 @@ from db_findings import save_findings
 ZAP_PATH = "zaproxy"
 ZAP_API_URL = "http://127.0.0.1:9090"
 API_KEY = "b57r80eafoogrcivehpv83qgp0"
+ZAP_SCAN_POLICY = "Default Policy"
 
 # Rutas estándar de tu proyecto
 REPORTS_DIR = "/home/anubis/AnubisProject/reports/zap" # Carpeta para los JSON de ZAP
@@ -22,6 +24,60 @@ TARGETS_FILE = "/home/anubis/AnubisProject/reports/sitios.txt"
 DATABASE_URL = "postgresql://admin:Malware2030$@localhost:5432/ciber_db"
 
 os.makedirs(REPORTS_DIR, exist_ok=True)
+
+# Mismo Redis (db=1) que usa main.py/tasks.py para locks de deduplicación.
+# Acá sirve para serializar la fase de active scan por etapas: dos escaneos
+# de ZAP corriendo a la vez (la cola heavy permite concurrencia 2) pisarían
+# la política de reglas compartida si ambos la tocan al mismo tiempo.
+_zap_redis = redis.Redis(host='localhost', port=6379, db=1, decode_responses=True)
+ZAP_POLICY_LOCK_KEY = "anubis:zap_policy_lock"
+
+# Grupos de reglas de active scan por palabra clave en el nombre — no se cablean
+# IDs porque cambian entre versiones/addons de ZAP. Cada grupo corre como una
+# pasada separada: reduce el volumen de payloads "sospechosos" enviados en
+# ráfaga, dándole a ZAP mejor chance de completar comparaciones diferenciales
+# (ej. SQL Injection boolean-based) antes de que un WAF empiece a bloquear o
+# limitar por volumen. El precio es que el escaneo completo tarda más — cada
+# etapa vuelve a recorrer el sitio con menos reglas activas.
+SCAN_STAGE_KEYWORDS = [
+    ("sqli",      ["sql injection"]),
+    ("xss",       ["cross site scripting", "xss"]),
+    ("cmd_rce",   ["command injection", "code injection", "shell", "remote code execution",
+                    "template injection", "log4shell", "spring4shell", "react2shell"]),
+    ("traversal", ["path traversal", "file inclusion", "external entity", "xxe",
+                    "cloud metadata", "xpath injection", "xslt injection"]),
+    ("misc_inject", ["injection", "padding oracle", "soap"]),
+]
+STAGE_PAUSE_SECONDS = 15  # respiro entre etapas para no sumar ráfagas consecutivas
+
+# La regla "Cross Site Scripting (DOM Based)" es la única de las 53 que abre
+# un Firefox real vía Selenium para renderizar la página. Comprobado en vivo:
+# incluso limitando la concurrencia a 2 hilos se cuelga después de ~15-20 min
+# (17.000+ requests sin avanzar, ~60 procesos Firefox/GeckoDriver acumulados
+# sin liberarse) — la misma inestabilidad de Selenium/GeckoDriver que ya
+# habíamos visto con el daemon de ZAP. Las otras reglas de XSS (Reflected,
+# Persistent, Persistent-Prime/Spider) no dependen de navegador y cubren la
+# mayoría de casos reales, así que se excluye del ciclo automático. Sigue
+# disponible para correrla puntual/manual vía la API de ZAP si hace falta.
+EXCLUDED_SCANNER_KEYWORDS = ["dom based"]
+
+def _group_scanners_into_stages(scanners):
+    """dict: nombre_de_etapa -> lista de scanner ids. 'resto' agrupa todo lo
+    que no matcheó ninguna keyword (headers, info leaks, fuzzing, etc.). Los
+    scanners en EXCLUDED_SCANNER_KEYWORDS quedan fuera de todas las etapas."""
+    stages = {name: [] for name, _ in SCAN_STAGE_KEYWORDS}
+    stages["resto"] = []
+    for s in scanners:
+        name_lower = s.get('name', '').lower()
+        if any(k in name_lower for k in EXCLUDED_SCANNER_KEYWORDS):
+            continue
+        for stage_name, keywords in SCAN_STAGE_KEYWORDS:
+            if any(k in name_lower for k in keywords):
+                stages[stage_name].append(s['id'])
+                break
+        else:
+            stages["resto"].append(s['id'])
+    return stages
 
 def update_db_status(url, message):
     """Actualiza el estado en la base de datos para el Dashboard"""
@@ -132,10 +188,40 @@ def run_zap_engine(target_url):
     s_data = requests.get(f"{ZAP_API_URL}/JSON/spider/action/scan/", params={'apikey': API_KEY, 'url': target_url}).json()
     wait_for_progress(target_url, "spider", s_data.get('scan'))
 
-    # 2. Active Scan
-    update_db_status(target_url, "ZAP: Atacando (Active Scan)...")
-    a_data = requests.get(f"{ZAP_API_URL}/JSON/ascan/action/scan/", params={'apikey': API_KEY, 'url': target_url, 'recurse': 'true'}).json()
-    wait_for_progress(target_url, "ascan", a_data.get('scan'))
+    # 2. Active Scan por etapas (lock global: ver ZAP_POLICY_LOCK_KEY)
+    lock = _zap_redis.lock(ZAP_POLICY_LOCK_KEY, timeout=1800, blocking_timeout=1800)
+    if not lock.acquire():
+        update_db_status(target_url, "ZAP: Error - no se pudo reservar la política de ZAP")
+        raise RuntimeError("No se pudo adquirir el lock de política de ZAP (otro escaneo lo tuvo reservado 30 min)")
+    try:
+        scanners = requests.get(f"{ZAP_API_URL}/JSON/ascan/view/scanners/",
+                                 params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY}).json().get('scanners', [])
+        stages = _group_scanners_into_stages(scanners)
+        stage_order = [name for name, _ in SCAN_STAGE_KEYWORDS] + ["resto"]
+
+        for i, stage_name in enumerate(stage_order):
+            ids = stages.get(stage_name) or []
+            if not ids:
+                continue
+            update_db_status(target_url, f"ZAP: Atacando ({stage_name}, {len(ids)} regla(s))...")
+            requests.get(f"{ZAP_API_URL}/JSON/ascan/action/disableAllScanners/",
+                         params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
+            requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableScanners/",
+                         params={'apikey': API_KEY, 'ids': ','.join(ids), 'scanPolicyName': ZAP_SCAN_POLICY})
+
+            a_data = requests.get(f"{ZAP_API_URL}/JSON/ascan/action/scan/",
+                                   params={'apikey': API_KEY, 'url': target_url, 'recurse': 'true'}).json()
+            wait_for_progress(target_url, "ascan", a_data.get('scan'))
+
+            if i < len(stage_order) - 1:
+                time.sleep(STAGE_PAUSE_SECONDS)
+    finally:
+        # Restaurar la política completa siempre, incluso si una etapa falló —
+        # así el siguiente escaneo (o alguien usando la UI de ZAP directamente)
+        # no hereda una política a medio acotar.
+        requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableAllScanners/",
+                     params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
+        lock.release()
 
     # 3. Extraer Alertas (Vulnerabilidad, Evidencia, Severidad, ID OWASP)
     alerts = requests.get(f"{ZAP_API_URL}/JSON/core/view/alerts/", params={'apikey': API_KEY, 'baseurl': target_url}).json().get('alerts', [])
