@@ -1,15 +1,27 @@
 import subprocess
 import json
 import os
+import sys
 import psycopg2
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from db_findings import save_findings
+
 # CONFIGURACIÓN
-OUTPUT_DIR = "/home/anubis/AnubisProject/reports/gobuster"
+OUTPUT_DIR = "/home/anubis/AnubisProject/reports/fuzz_gobuster"
 DATABASE_URL = "postgresql://admin:Malware2030$@localhost:5432/ciber_db"
 WORDLIST = "/usr/share/seclists/Discovery/Web-Content/common.txt"
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
+
+def _severity_for_status(code):
+    code = str(code)
+    if code in ("200", "204"):
+        return "medium"
+    if code in ("301", "302", "307"):
+        return "low"
+    return "info"
 
 def update_db_status(url, message):
     try:
@@ -64,9 +76,17 @@ def run_gobuster(name, url):
         with open(final_output_file, 'w') as f:
             json.dump({
                 "target": name,
-                "tool": "gobuster", 
+                "tool": "gobuster",
                 "results": found_paths
             }, f, indent=4)
+
+        findings = [{
+            "severity": _severity_for_status(p["status"]),
+            "title": f"Ruta expuesta: {p['path']} (HTTP {p['status']})",
+            "description": f"Gobuster encontró la ruta '{p['path']}' con código de respuesta {p['status']}.",
+            "extra": {"path": p["path"], "status": p["status"], "tool": "gobuster"},
+        } for p in found_paths]
+        save_findings(url, 'fuzz_gobuster', findings)
 
         print(f"[+] Gobuster finalizado para {name}. Hallazgos: {len(found_paths)}")
         update_db_status(url, "Fuzzing Gobuster OK")
