@@ -27,6 +27,28 @@ const SSL_SEVERITY = {
   'TLS 1.1': 'Low',
 };
 
+// ─── low-priority severities (Low / Informational) get collapsed ─
+const isMinorSeverity = (sev = '') => {
+  const s = sev.toLowerCase();
+  return s === 'low' || s === 'informational' || s === 'info';
+};
+
+const SeverityToggleRow = ({ count, expanded, onToggle, colSpan }) => (
+  <tr>
+    <td colSpan={colSpan} className="pt-2 pb-1">
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-1.5 font-mono text-[0.65rem] text-on-surface-variant hover:text-primary transition-colors"
+      >
+        <span className="material-symbols-outlined" style={{ fontSize: 14 }}>
+          {expanded ? 'expand_less' : 'expand_more'}
+        </span>
+        {expanded ? 'Ocultar' : 'Ver'} {count} hallazgo{count !== 1 ? 's' : ''} de severidad baja / informativa
+      </button>
+    </td>
+  </tr>
+);
+
 // ─── panel heading shared component ─────────────────────────────
 const PanelHead = ({ icon, sub, title, color = 'text-primary', iconBg = 'bg-primary/10 border-primary/20' }) => (
   <div className="flex items-center gap-3 mb-5">
@@ -75,6 +97,9 @@ export default function Findings() {
   const [jsonDetails, setJsonDetails]     = useState(null);
   const [niktoDetails, setNiktoDetails]   = useState(null);
 
+  const [showLowZap, setShowLowZap]       = useState(false);
+  const [showLowNikto, setShowLowNikto]   = useState(false);
+
   // ─── fetch target list ────────────────────────────────────────
   useEffect(() => {
     axios.get(`http://127.0.0.1:8000/targets/?nocache=${Date.now()}`)
@@ -95,6 +120,8 @@ export default function Findings() {
   useEffect(() => {
     if (!selectedTarget) return;
     setTargetStatus(selectedTarget.status);
+    setShowLowZap(false);
+    setShowLowNikto(false);
     const fetch = async () => {
       setLoadingDetails(true);
       const fileName = selectedTarget.name.toLowerCase().trim().replace(/\s+/g, '_');
@@ -274,21 +301,39 @@ export default function Findings() {
                     </tr>
                   </thead>
                   <tbody>
-                    {zapDetails?.vulnerabilities?.length > 0 ? zapDetails.vulnerabilities.map((v, i) => {
-                      const c = getSeverityColor(v.severidad);
+                    {zapDetails?.vulnerabilities?.length > 0 ? (() => {
+                      const renderZapRow = (v, i) => {
+                        const c = getSeverityColor(v.severidad);
+                        return (
+                          <tr key={i} className="border-b border-outline-variant/10 hover:bg-primary/5 transition-colors">
+                            <td className="py-3 pr-4">
+                              <span className={`font-mono text-[0.6rem] font-semibold tracking-[0.08em] px-2 py-0.5 rounded border ${c.text} ${c.bg} ${c.border}`}>
+                                {v.severidad}
+                              </span>
+                            </td>
+                            <td className="py-3 pr-4 font-body text-sm text-on-surface font-medium">{v.vulnerabilidad}</td>
+                            <td className="py-3 pr-4 font-mono text-xs text-on-surface-variant max-w-[220px] break-all">{v.evidencia}</td>
+                            <td className="py-3 font-mono text-xs font-semibold text-primary">{v.owasp_id}</td>
+                          </tr>
+                        );
+                      };
+                      const important = zapDetails.vulnerabilities.filter(v => !isMinorSeverity(v.severidad));
+                      const minor     = zapDetails.vulnerabilities.filter(v => isMinorSeverity(v.severidad));
                       return (
-                        <tr key={i} className="border-b border-outline-variant/10 hover:bg-primary/5 transition-colors">
-                          <td className="py-3 pr-4">
-                            <span className={`font-mono text-[0.6rem] font-semibold tracking-[0.08em] px-2 py-0.5 rounded border ${c.text} ${c.bg} ${c.border}`}>
-                              {v.severidad}
-                            </span>
-                          </td>
-                          <td className="py-3 pr-4 font-body text-sm text-on-surface font-medium">{v.vulnerabilidad}</td>
-                          <td className="py-3 pr-4 font-mono text-xs text-on-surface-variant max-w-[220px] break-all">{v.evidencia}</td>
-                          <td className="py-3 font-mono text-xs font-semibold text-primary">{v.owasp_id}</td>
-                        </tr>
+                        <>
+                          {important.map(renderZapRow)}
+                          {minor.length > 0 && (
+                            <SeverityToggleRow
+                              count={minor.length}
+                              expanded={showLowZap}
+                              onToggle={() => setShowLowZap(s => !s)}
+                              colSpan={4}
+                            />
+                          )}
+                          {showLowZap && minor.map(renderZapRow)}
+                        </>
                       );
-                    }) : (
+                    })() : (
                       <ModuleEmpty scanning={scanning} label="// sin reportes de ZAP disponibles" rows />
                     )}
                   </tbody>
@@ -405,21 +450,39 @@ export default function Findings() {
                     </tr>
                   </thead>
                   <tbody>
-                    {niktoDetails?.vulnerabilities?.length > 0 ? niktoDetails.vulnerabilities.map((v, i) => {
-                      const c = getSeverityColor(v.severity || 'low');
+                    {niktoDetails?.vulnerabilities?.length > 0 ? (() => {
+                      const renderNiktoRow = (v, i) => {
+                        const c = getSeverityColor(v.severity || 'low');
+                        return (
+                          <tr key={i} className="border-b border-outline-variant/10 hover:bg-primary/5 transition-colors">
+                            <td className="py-3 pr-4">
+                              <span className={`font-mono text-[0.6rem] font-semibold tracking-[0.08em] px-2 py-0.5 rounded border ${c.text} ${c.bg} ${c.border}`}>
+                                {(v.severity || 'low').toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="py-3 pr-4 font-mono text-xs font-semibold text-primary">{v.method}</td>
+                            <td className="py-3 pr-4 font-body text-sm text-on-surface">{v.msg}</td>
+                            <td className="py-3 font-mono text-xs text-on-surface-variant">{v.url}</td>
+                          </tr>
+                        );
+                      };
+                      const important = niktoDetails.vulnerabilities.filter(v => !isMinorSeverity(v.severity || 'low'));
+                      const minor     = niktoDetails.vulnerabilities.filter(v => isMinorSeverity(v.severity || 'low'));
                       return (
-                        <tr key={i} className="border-b border-outline-variant/10 hover:bg-primary/5 transition-colors">
-                          <td className="py-3 pr-4">
-                            <span className={`font-mono text-[0.6rem] font-semibold tracking-[0.08em] px-2 py-0.5 rounded border ${c.text} ${c.bg} ${c.border}`}>
-                              {(v.severity || 'low').toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="py-3 pr-4 font-mono text-xs font-semibold text-primary">{v.method}</td>
-                          <td className="py-3 pr-4 font-body text-sm text-on-surface">{v.msg}</td>
-                          <td className="py-3 font-mono text-xs text-on-surface-variant">{v.url}</td>
-                        </tr>
+                        <>
+                          {important.map(renderNiktoRow)}
+                          {minor.length > 0 && (
+                            <SeverityToggleRow
+                              count={minor.length}
+                              expanded={showLowNikto}
+                              onToggle={() => setShowLowNikto(s => !s)}
+                              colSpan={4}
+                            />
+                          )}
+                          {showLowNikto && minor.map(renderNiktoRow)}
+                        </>
                       );
-                    }) : (
+                    })() : (
                       <ModuleEmpty scanning={scanning} label="// sin reportes de Nikto" rows />
                     )}
                   </tbody>
