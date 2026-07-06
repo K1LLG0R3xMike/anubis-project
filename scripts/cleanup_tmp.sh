@@ -1,16 +1,22 @@
 #!/bin/bash
-# cleanup_tmp.sh — Limpieza de /tmp y reinicio seguro de Celery
+# cleanup_tmp.sh — Limpieza de /tmp y reinicio seguro del worker heavy de Celery
 #
-# Monitorea el uso de /tmp. Si supera el umbral (90%), limpia los artefactos
-# de Firefox/GeckoDriver huérfanos y reinicia Celery con abort previo de tareas.
+# Monitorea el uso de /tmp. Si supera el umbral (90%), mata el daemon de ZAP
+# (y sus GeckoDriver/Firefox huérfanos) y reinicia anubis-celery-heavy, que es
+# el servicio systemd que lo hospeda. ZAP mantiene un daemon Java persistente
+# entre escaneos (para no pagar el arranque de la JVM en cada scan); cuando ese
+# daemon queda en un estado colgado, sigue abriendo y matando sesiones de
+# Firefox por su cuenta y llena /tmp de perfiles huérfanos aunque no haya
+# ningún escaneo real en curso. Matar solo firefox/geckodriver no alcanza:
+# el daemon Java sigue vivo y vuelve a generar más en minutos.
 #
 # Flujo (Opción B):
 #   1. Chequear uso de /tmp
-#   2. Si > THRESHOLD: detectar tareas Celery activas
-#   3. Si hay tareas activas: revocar tareas pendientes y esperar drenaje
-#   4. Matar procesos Firefox y GeckoDriver huérfanos
+#   2. Si > THRESHOLD: detectar tareas activas en la cola heavy (zap/nikto)
+#   3. Si hay tareas activas en heavy: revocar solo esa cola y esperar drenaje
+#   4. Matar el daemon de ZAP y los procesos Firefox/GeckoDriver huérfanos
 #   5. Limpiar artefactos de /tmp
-#   6. Reiniciar el worker Celery vía systemd
+#   6. Reiniciar anubis-celery-heavy vía systemd
 #
 # Uso:
 #   Cron (cada 5 min): */5 * * * * /home/anubis/AnubisProject/scripts/cleanup_tmp.sh
@@ -23,7 +29,13 @@ LOG_FILE="/home/anubis/AnubisProject/logs/cleanup_tmp.log"
 CELERY_APP_DIR="/home/anubis/AnubisProject/backend"
 VENV_PYTHON="${CELERY_APP_DIR}/venv/bin/python3"
 VENV_CELERY="${CELERY_APP_DIR}/venv/bin/celery"
-CELERY_SERVICE="anubis-celery"       # nombre del servicio systemd
+CELERY_SERVICE="anubis-celery-heavy"  # servicio systemd que hospeda el daemon de ZAP
+ZAP_PATTERN="/usr/share/zaproxy/zap-.*\.jar"  # patrón del proceso java del daemon ZAP
+
+# cron no exporta el bus de sesión del usuario; sin esto, todo "systemctl --user"
+# ejecutado desde crontab falla silenciosamente (siempre reporta "inactive").
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 log() {
@@ -34,11 +46,15 @@ tmp_usage() {
     df /tmp | awk 'NR==2 {gsub(/%/,"",$5); print $5}'
 }
 
-active_celery_tasks() {
-    # Devuelve el número de tareas activas en el worker
+active_heavy_tasks() {
+    # Cuenta solo las tareas activas del worker heavy@... (zap/nikto), sin tocar
+    # el estado de las colas light/attack/beat.
     cd "$CELERY_APP_DIR" && \
-    "$VENV_CELERY" -A celery_app inspect active --timeout 5 2>/dev/null \
-        | grep -c '"name"' || echo 0
+    "$VENV_PYTHON" -c "
+from celery_app import celery_app
+active = celery_app.control.inspect(timeout=5).active() or {}
+print(sum(len(tasks) for host, tasks in active.items() if host.startswith('heavy@')))
+" 2>/dev/null || echo 0
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -52,37 +68,35 @@ fi
 
 log "ALERTA: /tmp al ${USAGE}% (umbral: ${THRESHOLD}%) — iniciando limpieza"
 
-# ── Paso 1: Abortar tareas activas si las hay ──────────────────────────────────
-ACTIVE=$(active_celery_tasks)
+# ── Paso 1: Abortar tareas activas de la cola heavy si las hay ────────────────
+ACTIVE=$(active_heavy_tasks)
 if [ "$ACTIVE" -gt 0 ]; then
-    log "Hay ${ACTIVE} tarea(s) activa(s) en Celery. Revocando tareas pendientes..."
+    log "Hay ${ACTIVE} tarea(s) activa(s) en la cola heavy. Revocando pendientes de esa cola..."
     cd "$CELERY_APP_DIR" && \
-        "$VENV_CELERY" -A celery_app purge -f 2>/dev/null && \
-        log "Cola vaciada. Esperando ${DRAIN_WAIT}s para drenaje de tareas en curso..."
+        "$VENV_CELERY" -A celery_app purge -f -Q heavy 2>/dev/null && \
+        log "Cola heavy vaciada. Esperando ${DRAIN_WAIT}s para drenaje de tareas en curso..."
     sleep "$DRAIN_WAIT"
 else
-    log "Celery idle — sin tareas activas."
+    log "Cola heavy idle — sin tareas activas."
 fi
 
-# ── Paso 2: Matar Firefox y GeckoDriver huérfanos ─────────────────────────────
-FF_COUNT=$(pgrep -c firefox-esr 2>/dev/null || echo 0)
-GD_COUNT=$(pgrep -c geckodriver 2>/dev/null || echo 0)
+# ── Paso 2: Matar el daemon de ZAP y Firefox/GeckoDriver huérfanos ────────────
+ZAP_COUNT=$(pgrep -c -f "$ZAP_PATTERN" 2>/dev/null || echo 0)
+FF_COUNT=$(pgrep -c -x firefox-esr 2>/dev/null || echo 0)
+GD_COUNT=$(pgrep -c -x geckodriver 2>/dev/null || echo 0)
 
-if [ "$FF_COUNT" -gt 0 ] || [ "$GD_COUNT" -gt 0 ]; then
-    log "Matando ${FF_COUNT} proceso(s) firefox-esr y ${GD_COUNT} geckodriver..."
+if [ "$ZAP_COUNT" -gt 0 ] || [ "$FF_COUNT" -gt 0 ] || [ "$GD_COUNT" -gt 0 ]; then
+    log "Matando ${ZAP_COUNT} daemon(s) ZAP, ${FF_COUNT} firefox-esr y ${GD_COUNT} geckodriver..."
+    # El daemon ZAP primero: es quien relanza firefox/geckodriver, matarlo evita
+    # que reaparezcan procesos nuevos mientras se limpia.
+    pkill -9 -f "$ZAP_PATTERN" 2>/dev/null
     pkill -9 -x geckodriver 2>/dev/null
     sleep 1
     pkill -9 -x firefox-esr 2>/dev/null
     sleep 1
-    # Limpiar zombies: matar procesos defunct si quedaron
-    ZOMBIES=$(ps aux | awk '$8=="Z" && /firefox/ {print $2}')
-    if [ -n "$ZOMBIES" ]; then
-        log "Limpiando zombies: $ZOMBIES"
-        # los zombies desaparecen al morir su padre (geckodriver ya fue matado)
-    fi
-    log "Procesos de Firefox/GeckoDriver terminados."
+    log "Daemon ZAP y procesos Firefox/GeckoDriver terminados."
 else
-    log "Sin procesos Firefox/GeckoDriver activos."
+    log "Sin daemon ZAP ni procesos Firefox/GeckoDriver activos."
 fi
 
 # ── Paso 3: Limpiar artefactos de /tmp ────────────────────────────────────────
