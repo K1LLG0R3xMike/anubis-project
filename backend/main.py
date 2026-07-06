@@ -482,6 +482,31 @@ def get_historical(db: Session = Depends(database.get_db)):
     return result
 
 
+@app.get("/findings/target/{target_id}")
+def get_target_findings(target_id: int, db: Session = Depends(database.get_db)):
+    """Findings de un target agrupados por módulo, directo de la tabla findings.
+    Usado por Findings.jsx para renderizar automáticamente una sección genérica
+    por cada módulo detectado que no tenga ya una tabla a medida (waf/whatweb/
+    headers/certs/nikto/zap) — así un script nuevo conectado a save_findings()
+    aparece en Findings sin tocar el frontend."""
+    findings = (
+        db.query(models.Finding)
+        .filter(models.Finding.target_id == target_id)
+        .order_by(models.Finding.scan_date.desc())
+        .all()
+    )
+    groups: dict = {}
+    for f in findings:
+        groups.setdefault(f.module, []).append({
+            "id": f.id,
+            "severity": f.severity or "info",
+            "title": f.title,
+            "description": f.description,
+            "extra": json.loads(f.extra) if f.extra else {},
+        })
+    return groups
+
+
 @app.get("/findings/compare")
 def compare_findings(
     target_id: int,

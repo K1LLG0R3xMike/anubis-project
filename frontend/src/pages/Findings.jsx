@@ -49,6 +49,10 @@ const SeverityToggleRow = ({ count, expanded, onToggle, colSpan }) => (
   </tr>
 );
 
+// Módulos con tabla a medida más abajo — cualquier otro módulo detectado en
+// Scan Engine que tenga findings se renderiza con la sección genérica.
+const KNOWN_MODULES = ['waf', 'whatweb', 'headers', 'certs', 'nikto', 'zap'];
+
 // ─── panel heading shared component ─────────────────────────────
 const PanelHead = ({ icon, sub, title, color = 'text-primary', iconBg = 'bg-primary/10 border-primary/20' }) => (
   <div className="flex items-center gap-3 mb-5">
@@ -100,12 +104,22 @@ export default function Findings() {
   const [showLowZap, setShowLowZap]       = useState(false);
   const [showLowNikto, setShowLowNikto]   = useState(false);
 
+  // ─── módulos auto-detectados sin tabla a medida (ej. fuzz_dirb, kiterunner) ──
+  const [scanModules, setScanModules]         = useState([]);
+  const [genericFindings, setGenericFindings] = useState({});
+  const [showLowExtra, setShowLowExtra]       = useState({});
+  const toggleLowExtra = (id) => setShowLowExtra(s => ({ ...s, [id]: !s[id] }));
+  const extraModules = scanModules.filter(m => !KNOWN_MODULES.includes(m.id));
+
   // ─── fetch target list ────────────────────────────────────────
   useEffect(() => {
     axios.get(`http://127.0.0.1:8000/targets/?nocache=${Date.now()}`)
       .then(r => setTargets(r.data))
       .catch(() => {})
       .finally(() => setLoadingTargets(false));
+    axios.get(`http://127.0.0.1:8000/system/scan-modules`)
+      .then(r => setScanModules(r.data))
+      .catch(() => {});
   }, []);
 
   // ─── auto-select if navigated with state ─────────────────────
@@ -122,6 +136,7 @@ export default function Findings() {
     setTargetStatus(selectedTarget.status);
     setShowLowZap(false);
     setShowLowNikto(false);
+    setShowLowExtra({});
     const fetch = async () => {
       setLoadingDetails(true);
       const fileName = selectedTarget.name.toLowerCase().trim().replace(/\s+/g, '_');
@@ -138,6 +153,10 @@ export default function Findings() {
         tryGet(`${BASE}/whatweb/${fileName}.json?t=${ts}`, setJsonDetails),
         tryGet(`${BASE}/nikto/${fileName}.json?t=${ts}`,   setNiktoDetails),
       ]);
+      try {
+        const { data } = await axios.get(`http://127.0.0.1:8000/findings/target/${selectedTarget.id}?t=${ts}`);
+        setGenericFindings(data);
+      } catch { setGenericFindings({}); }
       setLoadingDetails(false);
     };
     fetch();
@@ -176,6 +195,11 @@ export default function Findings() {
       if (cert) setCertDetails(cert);
       if (web)  setJsonDetails(web);
       if (nkt)  setNiktoDetails(nkt);
+
+      try {
+        const { data } = await axios.get(`http://127.0.0.1:8000/findings/target/${selectedTarget.id}?t=${ts}`);
+        setGenericFindings(data);
+      } catch {}
     };
 
     const id = setInterval(tick, 30_000);
@@ -489,6 +513,64 @@ export default function Findings() {
                 </table>
               </div>
             </div>
+
+            {/* ── Módulos auto-detectados (Scan Engine) ─────────── */}
+            {extraModules.map((mod) => {
+              const findings = genericFindings[mod.id] || [];
+              return (
+                <div key={mod.id} className="bg-surface-container-low rounded-2xl border border-outline-variant/20 p-6">
+                  <PanelHead icon="extension" sub={mod.id} title={mod.label}
+                    color="text-on-surface-variant" iconBg="bg-outline-variant/10 border-outline-variant/20" />
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-outline-variant/20">
+                          {['Riesgo', 'Hallazgo', 'Descripción'].map(h => (
+                            <th key={h} className="font-mono text-[0.6rem] text-on-surface-variant uppercase tracking-[0.18em] text-left py-3 pr-4">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {findings.length > 0 ? (() => {
+                          const renderRow = (f, i) => {
+                            const c = getSeverityColor(f.severity);
+                            return (
+                              <tr key={f.id ?? i} className="border-b border-outline-variant/10 hover:bg-primary/5 transition-colors">
+                                <td className="py-3 pr-4">
+                                  <span className={`font-mono text-[0.6rem] font-semibold tracking-[0.08em] px-2 py-0.5 rounded border ${c.text} ${c.bg} ${c.border}`}>
+                                    {(f.severity || 'info').toUpperCase()}
+                                  </span>
+                                </td>
+                                <td className="py-3 pr-4 font-body text-sm text-on-surface font-medium">{f.title}</td>
+                                <td className="py-3 font-mono text-xs text-on-surface-variant max-w-[320px] break-all">{f.description}</td>
+                              </tr>
+                            );
+                          };
+                          const important = findings.filter(f => !isMinorSeverity(f.severity));
+                          const minor     = findings.filter(f => isMinorSeverity(f.severity));
+                          return (
+                            <>
+                              {important.map(renderRow)}
+                              {minor.length > 0 && (
+                                <SeverityToggleRow
+                                  count={minor.length}
+                                  expanded={!!showLowExtra[mod.id]}
+                                  onToggle={() => toggleLowExtra(mod.id)}
+                                  colSpan={3}
+                                />
+                              )}
+                              {showLowExtra[mod.id] && minor.map(renderRow)}
+                            </>
+                          );
+                        })() : (
+                          <ModuleEmpty scanning={scanning} label={`// sin reportes de ${mod.label}`} rows />
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
 
           </div>
         )}
