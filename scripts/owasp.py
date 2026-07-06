@@ -86,6 +86,39 @@ def wait_for_progress(url, component, scan_id=None):
             break
         time.sleep(10)
 
+def _extract_evidencia(a):
+    """
+    Fallback cuando ZAP no captura 'evidence' (string vacío, no ausente):
+    algunas reglas activas (Path Traversal, SQL Injection basado en timing/
+    errores) no dejan un match literal en la respuesta. El campo real que
+    trae la explicación técnica de ZAP es 'other' (no 'otherinfo', que no
+    existe en esta API y por eso nunca se usaba). Se prioriza el payload
+    real enviado ('attack') junto al parámetro, y la explicación de 'other'
+    (ej. condiciones booleanas probadas en una inyección SQL), antes de
+    caer al parámetro/URL desnudos.
+    """
+    evidencia = (a.get('evidence') or '').strip()
+    if evidencia:
+        return evidencia[:500]
+
+    attack = (a.get('attack') or '').strip()
+    param = (a.get('param') or '').strip()
+    other = (a.get('other') or '').strip().replace('\n', ' ')
+
+    partes = []
+    if attack:
+        partes.append(f"Payload: {attack}" + (f" (parámetro: {param})" if param else ""))
+    elif param:
+        partes.append(f"Parámetro afectado: {param}")
+    if other:
+        partes.append(other)
+
+    if partes:
+        return " | ".join(partes)[:500]
+    if a.get('url'):
+        return f"URL: {a['url']}"[:500]
+    return "Sin evidencia específica capturada por ZAP"
+
 def run_zap_engine(target_url):
     target_name = get_target_name_from_db(target_url).lower().replace(" ", "_")
     print(f"\n🚀 MOTOR OWASP ZAP: {target_url} ({target_name})")
@@ -110,17 +143,17 @@ def run_zap_engine(target_url):
     vulnerabilities = []
     seen = set()
     for a in alerts:
-        key = f"{a['alert']}-{a['risk']}"
+        key = f"{a['alert']}-{a['risk']}-{a.get('param', '')}"
         if key not in seen:
             owasp_id = "N/A"
             for t in a.get('tags', {}).keys():
                 if "OWASP_2021" in t:
                     owasp_id = t.replace("OWASP_2021_", "")
                     break
-            
+
             vulnerabilities.append({
                 "vulnerabilidad": a['alert'],
-                "evidencia": a.get('evidence', 'N/A')[:200],
+                "evidencia": _extract_evidencia(a),
                 "severidad": a['risk'],
                 "owasp_id": owasp_id
             })

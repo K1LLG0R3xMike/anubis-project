@@ -18,8 +18,8 @@ def update_db(url, waf_name):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        # Actualizamos el status para que el Dashboard lo muestre
-        cur.execute("UPDATE targets SET status = %s WHERE url = %s", (f"WAF: {waf_name}", url))
+        # Actualizamos el status (para el Dashboard) y waf_detected (para los reportes/IA)
+        cur.execute("UPDATE targets SET status = %s, waf_detected = %s WHERE url = %s", (f"WAF: {waf_name}", waf_name, url))
         conn.commit()
         cur.close()
         conn.close()

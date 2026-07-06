@@ -115,6 +115,16 @@ def run_testssl(url):
                 for p, s in filtered_protocols.items()
                 if s == 'Soportado' and p in SSL_SEV
             ]
+            # Si testssl corrió y no encontró protocolos inseguros, igual se guarda un
+            # finding informativo: sin esto, la tabla 'findings' queda sin filas para
+            # 'certs' y el reporte/IA lo interpreta como "no se ejecutó el escaneo".
+            if not cert_findings and filtered_protocols:
+                cert_findings = [{
+                    'severity': 'info',
+                    'title': 'SSL/TLS: sin protocolos inseguros detectados',
+                    'description': 'testssl.sh no encontró versiones obsoletas de SSL/TLS habilitadas (SSLv2, SSLv3, TLS 1.0, TLS 1.1).',
+                    'extra': {'protocols': filtered_protocols}
+                }]
             save_findings(url, 'certs', cert_findings)
 
             if os.path.exists(temp_raw_file): os.remove(temp_raw_file)

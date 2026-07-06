@@ -32,9 +32,11 @@ def _build_prompt(report_type: str, snapshot: dict) -> str:
     site_label = ", ".join(n for n in names if n) or "Objetivo de análisis"
     url_list   = "\n".join(f"- {t.get('url','')}" for t in targets if t.get("url")) or "- Sin URL especificada"
 
-    def fmt_findings(findings_list, limit=25):
+    NOT_RUN_MARKER = "[MÓDULO NO EJECUTADO — no hay datos de escaneo para este control]"
+
+    def fmt_findings(findings_list, limit=25, empty_msg="Sin hallazgos reportados por esta herramienta."):
         if not findings_list:
-            return "Sin datos registrados."
+            return empty_msg
         lines = []
         for f in findings_list[:limit]:
             sev   = (f.get("severity") or "info").upper()
@@ -45,12 +47,19 @@ def _build_prompt(report_type: str, snapshot: dict) -> str:
 
     data_blocks = []
     for t in targets:
-        mods  = t.get("findings_by_module", {})
+        mods = t.get("findings_by_module", {})
+        # waf.py y certs.py ahora siempre insertan al menos un finding cuando
+        # sí corrieron (incluso si el resultado es "limpio"), así que una lista
+        # vacía en estos dos módulos significa de forma confiable "no se ejecutó".
+        # En el resto de módulos una lista vacía puede significar "corrió y no
+        # encontró nada" (ej. todos los headers presentes), así que no se
+        # marcan como no-ejecutados para evitar falsos negativos de ejecución.
+        waf_val = t.get('waf_detected') or 'No verificado'
         block = f"""TARGET: {t.get('name','')} | URL: {t.get('url','')}
-WAF detectado: {t.get('waf_detected', 'No verificado')}
+WAF detectado: {waf_val if waf_val != 'No verificado' else NOT_RUN_MARKER}
 
 SSL/TLS (testssl.sh):
-{fmt_findings(mods.get('certs', []))}
+{fmt_findings(mods.get('certs', []), empty_msg=NOT_RUN_MARKER)}
 
 Cabeceras HTTP:
 {fmt_findings(mods.get('headers', []))}
@@ -83,6 +92,15 @@ Kiterunner (Endpoints API):
 
 INSTRUCCIONES
 Genera un informe en español con la siguiente estructura exacta. Usa formato Markdown.
+Sé conciso en todo el informe: prosa directa, sin relleno ni repetición, frases cortas. Nunca alargues un párrafo para "completar espacio".
+
+REGLA CRÍTICA SOBRE DATOS FALTANTES
+Si el bloque de datos de un control dice exactamente "[MÓDULO NO EJECUTADO — no hay datos de escaneo para este control]", ese control NO fue analizado. Nunca lo inventes ni asumas un resultado (ni positivo ni negativo). Para ese control usa:
+- **Resultado:** "No se ejecutó este análisis sobre el objetivo."
+- **Nivel de riesgo:** "NO EVALUADO"
+- **Descripción del riesgo:** "No aplica — módulo no ejecutado."
+- **Recomendación:** "Ejecutar este análisis para determinar el nivel de riesgo real."
+- En la tabla de la sección 5, usa Estado "➖" (no ✅/⚠️/❌) para ese control.
 
 ESTRUCTURA DEL INFORME
 
@@ -92,7 +110,7 @@ Fecha: {today}
 Clasificación: Confidencial
 
 # 2. INTRODUCCIÓN
-Redacta un párrafo introductorio que mencione:
+Redacta un párrafo introductorio breve (máximo 4 líneas) que mencione:
 - El propósito del análisis
 - Que se realizó desde una perspectiva de seguridad ofensiva no intrusiva
 - Incluye siempre esta frase adaptada al contexto: "El objetivo de este análisis es identificar posibles vectores de ataque que puedan ser aprovechados por un actor malicioso y describir de forma clara los riesgos asociados a cada hallazgo."
@@ -115,15 +133,15 @@ Las técnicas aplicadas fueron:
 Para cada herramienta usa este formato exacto:
 
 ## 4.X <NOMBRE_HERRAMIENTA> — <SITIO>
-**¿Qué se analiza?** Breve descripción de qué busca esta herramienta y por qué es relevante (2-3 líneas máximo).
-**Resultado:** Resume el resultado del escaneo de forma clara y técnica.
-**Nivel de riesgo:** [CRÍTICO / ALTO / MEDIO / BAJO / INFORMATIVO]
-**Descripción del riesgo:** (Solo si hay hallazgos) Explica brevemente qué riesgo representa. Si no hay hallazgos negativos escribe: "✅ El sitio cumple con los mínimos de seguridad esperados para este control."
-**Recomendación:** (Solo si hay hallazgos) Indica la acción correctiva concreta y priorizada. Si no hay hallazgos escribe: "No se requieren acciones correctivas en este control."
+**¿Qué se analiza?** Qué busca esta herramienta y por qué es relevante (1-2 líneas máximo).
+**Resultado:** Resume el resultado del escaneo de forma clara y técnica (2-3 líneas máximo).
+**Nivel de riesgo:** [CRÍTICO / ALTO / MEDIO / BAJO / INFORMATIVO / NO EVALUADO]
+**Descripción del riesgo:** (Solo si hay hallazgos, 1-3 líneas máximo) Explica brevemente qué riesgo representa. Si no hay hallazgos negativos escribe: "✅ El sitio cumple con los mínimos de seguridad esperados para este control."
+**Recomendación:** (Solo si hay hallazgos, 1-2 líneas máximo) Indica la acción correctiva concreta y priorizada. Si no hay hallazgos escribe: "No se requieren acciones correctivas en este control."
 
 Genera las subsecciones:
-- 4.1 WAF (Firewall de Aplicación Web): Si detectó WAF → riesgo INFORMATIVO, mencionar el nombre como capa de protección. Si no → riesgo MEDIO, recomendar WAF.
-- 4.2 Certificados SSL/TLS: Evalúa versiones de protocolo (TLS 1.0/1.1 = riesgo ALTO), cifrados débiles, expiración, cadena.
+- 4.1 WAF (Firewall de Aplicación Web): Si el valor no es el marcador de no-ejecutado → hubo escaneo. Si el nombre indica un WAF real (ej. Cloudflare, Incapsula) → riesgo INFORMATIVO, mencionarlo como capa de protección. Si el valor es "None" o "Not Detected" → riesgo MEDIO, recomendar WAF.
+- 4.2 Certificados SSL/TLS: Si hubo datos, evalúa versiones de protocolo (TLS 1.0/1.1 = riesgo ALTO), cifrados débiles, expiración, cadena. Si el resultado es "sin protocolos inseguros detectados" → riesgo INFORMATIVO, "✅ Configuración TLS correcta, sin protocolos obsoletos habilitados."
 - 4.3 Cabeceras de Seguridad HTTP: Evalúa Strict-Transport-Security, Content-Security-Policy, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy. Por cada ausente: riesgo MEDIO.
 - 4.4 Stack Tecnológico (WhatWeb): Lista tecnologías detectadas. Si hay versiones desactualizadas o CVEs → riesgo ALTO.
 - 4.5 OWASP ZAP: Clasifica por High/Medium/Low/Informational. Para cada High o Medium: riesgo y recomendación concreta.
@@ -136,16 +154,18 @@ Genera esta tabla Markdown completa con los niveles de riesgo reales:
 
 | # | Control | Herramienta | Nivel de Riesgo | Estado |
 |---|---------|-------------|----------------|--------|
-| 1 | WAF | wafw00f | [nivel real] | [✅ / ⚠️ / ❌] |
-| 2 | SSL/TLS | testssl.sh | [nivel real] | [✅ / ⚠️ / ❌] |
-| 3 | Cabeceras HTTP | custom | [nivel real] | [✅ / ⚠️ / ❌] |
-| 4 | Stack tecnológico | WhatWeb | [nivel real] | [✅ / ⚠️ / ❌] |
-| 5 | Vulnerabilidades web | OWASP ZAP | [nivel real] | [✅ / ⚠️ / ❌] |
-| 6 | Escaneo de servidor | Nikto | [nivel real] | [✅ / ⚠️ / ❌] |
-| 7 | Endpoints API | Kiterunner | [nivel real] | [✅ / ⚠️ / ❌] |
+| 1 | WAF | wafw00f | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+| 2 | SSL/TLS | testssl.sh | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+| 3 | Cabeceras HTTP | custom | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+| 4 | Stack tecnológico | WhatWeb | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+| 5 | Vulnerabilidades web | OWASP ZAP | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+| 6 | Escaneo de servidor | Nikto | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+| 7 | Endpoints API | Kiterunner | [nivel real] | [✅ / ⚠️ / ❌ / ➖] |
+
+(➖ = módulo no ejecutado, usar solo cuando aplique la regla de datos faltantes)
 
 # 6. CONCLUSIONES
-Redacta 1 párrafo (máximo 5 líneas) que:
+Redacta 1 párrafo (máximo 4 líneas) que:
 - Resuma el nivel de madurez de seguridad del sitio analizado
 - Mencione el hallazgo más crítico si existe
 - Indique si el sitio representa un riesgo alto, medio o bajo para la organización
