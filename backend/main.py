@@ -444,6 +444,73 @@ def get_celery_status():
         },
     }
 
+# Binarios/scripts de escaneo que corren como nietos del worker de Celery
+# (ej. dirb es hijo de fuzz_dirb.py, que a su vez es hijo del pool worker).
+# Un revoke(terminate=True) solo mata al hijo directo del worker — estos
+# quedan huérfanos y siguen corriendo, como se vio con fuzz_dirb (116 min
+# colgado sin que nada lo cortara). Se matan aparte por patrón de proceso.
+_SCANNER_PROCESS_PATTERNS = [
+    "script_induvidual/.*\\.py",
+    r"\bdirb\b",
+    r"\bgobuster\b",
+    r"\bnikto\b",
+    r"\bkiterunner\b",
+]
+
+@app.post("/system/celery/kill-all")
+def kill_all_celery_tasks():
+    """Mata todas las tareas activas/en cola de Celery en todas las colas,
+    vacía las colas para que no se retomen, y limpia procesos huérfanos de
+    herramientas de escaneo que el revoke de Celery no alcanza."""
+    from celery_app import celery_app as _celery
+
+    insp = _celery.control.inspect(timeout=3)
+    active = insp.active() or {}
+    reserved = insp.reserved() or {}
+
+    task_ids = [t["id"] for tasks in list(active.values()) + list(reserved.values()) for t in tasks]
+    for tid in task_ids:
+        _celery.control.revoke(tid, terminate=True, signal="SIGKILL")
+
+    _celery.control.purge()
+
+    killed_patterns = []
+    for pattern in _SCANNER_PROCESS_PATTERNS:
+        try:
+            r = subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True)
+            if r.returncode == 0:
+                killed_patterns.append(pattern)
+        except Exception:
+            pass
+
+    return {
+        "message": f"{len(task_ids)} tarea(s) terminada(s), colas vaciadas.",
+        "killed_task_ids": task_ids,
+        "killed_process_patterns": killed_patterns,
+    }
+
+@app.post("/system/celery/restart-workers")
+def restart_celery_workers():
+    """Reinicia los servicios systemd --user de los workers de Celery
+    (light, heavy, attack). No toca beat ni el daemon de ZAP."""
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={env['XDG_RUNTIME_DIR']}/bus")
+
+    services = ["anubis-celery", "anubis-celery-heavy", "anubis-celery-attack"]
+    results = {}
+    for svc in services:
+        try:
+            r = subprocess.run(["systemctl", "--user", "restart", svc],
+                                capture_output=True, text=True, env=env, timeout=15)
+            results[svc] = "ok" if r.returncode == 0 else (r.stderr.strip() or "error")
+        except Exception as e:
+            results[svc] = str(e)
+
+    failed = [s for s, v in results.items() if v != "ok"]
+    message = "Workers reiniciados." if not failed else f"Fallo al reiniciar: {', '.join(failed)}"
+    return {"message": message, "results": results}
+
 # --- ENDPOINTS DE HISTÓRICO Y COMPARACIÓN ---
 
 @app.get("/findings/historical")

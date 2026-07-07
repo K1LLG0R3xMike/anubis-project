@@ -21,8 +21,10 @@ const fmtElapsed = (s) => {
 };
 
 export default function CeleryMonitorPanel({ onClose }) {
-  const [data, setData]     = useState(null);
-  const [error, setError]   = useState(false);
+  const [data, setData]           = useState(null);
+  const [error, setError]         = useState(false);
+  const [killing, setKilling]     = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   const fetchStatus = async () => {
     try {
@@ -41,6 +43,34 @@ export default function CeleryMonitorPanel({ onClose }) {
     return () => clearInterval(iv);
   }, []);
 
+  const handleKillAll = async () => {
+    if (!window.confirm('¿Matar TODAS las tareas activas y en cola de Celery? Esto corta cualquier escaneo en curso en todos los targets.')) return;
+    setKilling(true);
+    try {
+      const res = await axios.post(`${BASE}/system/celery/kill-all`);
+      alert(res.data.message || 'Tareas terminadas.');
+      fetchStatus();
+    } catch {
+      alert('No se pudo matar las tareas.');
+    } finally {
+      setKilling(false);
+    }
+  };
+
+  const handleRestartWorkers = async () => {
+    if (!window.confirm('¿Reiniciar los workers de Celery (light, heavy, attack)? Cualquier tarea en curso se perderá.')) return;
+    setRestarting(true);
+    try {
+      const res = await axios.post(`${BASE}/system/celery/restart-workers`);
+      alert(res.data.message || 'Workers reiniciados.');
+      setTimeout(fetchStatus, 3000);
+    } catch {
+      alert('No se pudo reiniciar los workers.');
+    } finally {
+      setRestarting(false);
+    }
+  };
+
   const totals = data?.totals;
 
   return (
@@ -58,6 +88,19 @@ export default function CeleryMonitorPanel({ onClose }) {
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>close</span>
           </button>
         )}
+      </div>
+
+      <div className="flex gap-2 mb-4">
+        <button onClick={handleKillAll} disabled={killing}
+          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border border-error/30 text-error font-bold text-[0.6rem] uppercase tracking-[0.05em] hover:bg-error/10 transition-colors disabled:opacity-50">
+          <span className="material-symbols-outlined" style={{ fontSize: 15 }}>stop_circle</span>
+          {killing ? 'Matando...' : 'Matar tareas'}
+        </button>
+        <button onClick={handleRestartWorkers} disabled={restarting}
+          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border border-primary/30 text-primary font-bold text-[0.6rem] uppercase tracking-[0.05em] hover:bg-primary/10 transition-colors disabled:opacity-50">
+          <span className="material-symbols-outlined" style={{ fontSize: 15 }}>restart_alt</span>
+          {restarting ? 'Reiniciando...' : 'Reiniciar workers'}
+        </button>
       </div>
 
       {error && (
