@@ -82,8 +82,9 @@ AnubisProject/
 │   └── postcss.config.js
 │
 ├── attack_scripts/                     # Módulos de explotación (Anubis Attack)
-│   ├── header_exploits.py              # ✅ Implementado: verifica cabeceras, genera PoC clickjacking
 │   └── [sqli.py, xss_playwright.py…]  # ⏳ Pendientes: ver sección "Scripts de Ataque"
+│                                        # (header_exploits.py, único implementado, se eliminó
+│                                        #  2026-07-06 — el foco pasó a Vector Agent IA)
 │
 ├── scripts/                            # Módulos de escaneo completo (todos los targets)
 │   ├── waf.py
@@ -93,6 +94,10 @@ AnubisProject/
 │   ├── nikto.py
 │   ├── owasp.py
 │   ├── Kiterunner.py
+│   ├── fuzz_dirb.py
+│   ├── fuzz_gobuster.py
+│   ├── cleanup_tmp.sh                  # cron: limpieza /tmp + reinicio worker heavy
+│   ├── cleanup_zap_sessions.sh         # cron: purga sesiones viejas de ZAP
 │   └── db_findings.py
 │
 ├── script_induvidual/                  # Mismos módulos para 1 target
@@ -106,6 +111,8 @@ AnubisProject/
 │   ├── nikto/
 │   ├── zap/
 │   ├── kiterunner/
+│   ├── fuzz_dirb/
+│   ├── fuzz_gobuster/
 │   └── ...
 │
 ├── Pruebas Hardening OpenClaw.docx     # Plantilla Word para generación de reportes DOCX
@@ -157,15 +164,19 @@ systemctl --user start anubis-celery-attack   # attack
 
 | Método | Ruta | Body | Descripción |
 |--------|------|------|-------------|
-| `POST` | `/run-waf` | — | WAF en todos los targets |
-| `POST` | `/run-whatweb` | — | Tech fingerprinting en todos |
-| `POST` | `/run-headers` | — | Cabeceras HTTP en todos |
-| `POST` | `/run-certs` | — | SSL/TLS en todos |
-| `POST` | `/run-nikto` | — | Nikto en todos |
-| `POST` | `/run-zap` | — | OWASP ZAP en todos |
-| `POST` | `/run-individual/{module}` | `{url}` | Módulo en 1 target |
+| `POST` | `/run-{module}` | — | Módulo en todos los targets (genérico, reemplaza los 6 endpoints hardcodeados `/run-waf`, `/run-zap`, etc. desde 2026-07-06) |
+| `POST` | `/run-individual/{module}` | `{url, target_id?}` | Módulo en 1 target |
 
-Valores válidos de `module`: `waf`, `whatweb`, `headers`, `certs`, `nikto`, `zap`, `kiterunner`
+`{module}` no es una lista fija: `discover_modules()` (`backend/scan_modules.py`) escanea `scripts/` y `script_induvidual/` en cada llamada y expone cualquier `.py` nuevo automáticamente (subido a mano o vía `/upload-script`), sin tocar código ni reiniciar nada. Módulos actuales: `waf`, `whatweb`, `headers`, `certs`, `nikto`, `zap`, `kiterunner`, `fuzz_dirb`, `fuzz_gobuster`.
+
+#### Scan Engine — auto-detección y colas por módulo
+
+| Método | Ruta | Body | Descripción |
+|--------|------|------|-------------|
+| `GET` | `/system/scan-modules` | — | Lista módulos detectados, su cola actual y si le falta la réplica en `scripts/` o `script_induvidual/` |
+| `PUT` | `/system/scan-modules/{id}/queue` | `{queue}` | Fija la cola (`light`/`heavy`) de un módulo, persistida en `scan_module_configs` |
+
+Antes de 2026-07-06 existían cinco listas hardcodeadas independientes (`SCRIPT_MAP`, `_HEAVY_MODULES`, dos `valid_modules`, `_MODULE_TOOL_LABELS`) que había que editar a mano por cada script nuevo — así fue como `Kiterunner.py` estuvo commiteado desde el 9 de junio sin quedar nunca conectado. `get_module_queue()` resuelve la cola de un módulo: usa el override en `scan_module_configs` si existe, si no cae a `heavy` para `zap`/`nikto` o `light` para el resto. `fuzz_dirb`, `fuzz_gobuster` y `kiterunner` tienen override explícito a `heavy` (herramientas de bruteforce/fuzzing, no aptas para la cola general).
 
 #### Reportes
 
@@ -188,6 +199,7 @@ Valores válidos de `module`: `waf`, `whatweb`, `headers`, `certs`, `nikto`, `za
 |--------|------|-------------|
 | `GET` | `/findings/historical` | Todos los findings agrupados por target/módulo/fecha |
 | `GET` | `/findings/compare` | Comparación entre dos escaneos (`target_id`, `module`, `date_old`, `date_new`) |
+| `GET` | `/findings/target/{id}` | Findings de un target agrupados por módulo, directo de la tabla `findings` — usado para generar secciones automáticas de módulos sin tabla a medida (ver `Findings.jsx` abajo) |
 
 #### Schedules
 
@@ -204,8 +216,10 @@ Valores de `repeat`: `"once"`, `"daily"`, `"weekly"`, `"monthly"`
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | `GET` | `/system/celery-status` | Estado en vivo de los workers Celery: por cada hostname (`light@`, `heavy@`, `attack@`) devuelve si está online, sus tareas activas (con `elapsed_seconds`) y las reservadas/en espera. Usa `celery_app.control.inspect()` con timeout de 2s. |
+| `POST` | `/system/celery/kill-all` | Revoca (SIGKILL) todas las tareas activas/en cola de todas las colas y las purga del broker. Además mata por patrón los procesos huérfanos de `dirb`/`gobuster`/`nikto`/`kiterunner` y los wrappers `script_induvidual/*.py`, que un `revoke` normal no alcanza porque corren como nietos del worker (ver nota de `fuzz_dirb` más abajo). No toca el daemon de ZAP. |
+| `POST` | `/system/celery/restart-workers` | Reinicia los servicios systemd `anubis-celery` (light), `anubis-celery-heavy` y `anubis-celery-attack`. No toca `beat` ni el daemon de ZAP. |
 
-Consumido por el panel **Estado de Workers** (`frontend/src/components/CeleryMonitorPanel.jsx`), que aparece en `Targets` a la derecha de la vista de lista tras lanzar un escaneo — hace polling cada 3s.
+Consumido por el panel **Estado de Workers** (`frontend/src/components/CeleryMonitorPanel.jsx`) en `Targets`, junto a la lista de targets — **siempre visible** (antes solo aparecía tras lanzar un escaneo). Hace polling cada 3s. Debajo del header incluye los botones **Matar tareas** y **Reiniciar workers**, cada uno con confirmación antes de ejecutar.
 
 ### Tareas Celery (`tasks.py`)
 
@@ -306,8 +320,8 @@ El estado de modo vive en `ModeContext.jsx` y es accesible en cualquier componen
 |------|---------|---------------|
 | `/login` | `Login.jsx` | Login. Credenciales: `admin` / `anubis2026` |
 | `/dashboard` | `Dashboard.jsx` / `AttackDashboard.jsx` | KPIs, targets, hallazgos (varía según modo) |
-| `/targets` | `Targets.jsx` | CRUD targets, escaneo por módulo, subida de scripts, monitor de workers Celery al lanzar un escaneo |
-| `/findings` | `Findings.jsx` | Findings por target y módulo con severidad. Las tablas de ZAP y Nikto colapsan los hallazgos Low/Informational detrás de un botón "Ver N hallazgos de severidad baja / informativa" (2026-07-06), mostrando por defecto solo Medium/High/Critical |
+| `/targets` | `Targets.jsx` | CRUD targets, escaneo por módulo (lista de módulos auto-detectada vía `/system/scan-modules`), subida de scripts, monitor de workers Celery siempre visible junto a la lista (sin vista de cuadrícula, solo lista, desde 2026-07-07) |
+| `/findings` | `Findings.jsx` | Findings por target y módulo con severidad. ZAP, Nikto y los módulos genéricos colapsan los hallazgos Low/Informational detrás de un botón "Ver N hallazgos de severidad baja / informativa" (2026-07-06), mostrando por defecto solo Medium/High/Critical. Módulos sin tabla a medida (`fuzz_dirb`, `fuzz_gobuster`, y cualquier script futuro conectado a `save_findings()`) generan su sección automáticamente vía `GET /findings/target/{id}` — no requieren tocar el frontend |
 | `/historical` | `Historical.jsx` | Timeline histórico, comparación antes/después |
 | `/schedule` | `Schedule.jsx` | Calendario, schedules recurrentes multi-módulo |
 | `/reports` | `Reports.jsx` | Generación, listado, descarga PDF/DOCX, análisis IA |
@@ -344,10 +358,35 @@ Cada script sigue el mismo patrón:
 | `nikto` | `nikto` | Vulnerabilidades del servidor web |
 | `zap` | OWASP ZAP API | Vulnerabilidades OWASP Top 10 |
 | `kiterunner` | `kiterunner` | Descubrimiento de endpoints de API |
+| `fuzz_dirb` | `dirb` | Fuerza bruta de rutas/directorios (wordlist `dirb/common.txt`) |
+| `fuzz_gobuster` | `gobuster` | Fuerza bruta de rutas/directorios (wordlist SecLists `raft-large-directories.txt`, ~62.300 palabras — subida desde `common.txt` el 2026-07-07 por baja cobertura) |
 
-### Extracción de evidencia en alertas de ZAP (2026-07-06)
+> **Cableado de `fuzz_dirb`/`fuzz_gobuster`/`kiterunner` (2026-07-06)**: ninguno de los tres llamaba a `save_findings()` — corrían la herramienta y el resultado se perdía sin tocar la tabla `findings`. Las copias en `scripts/` de fuzz_dirb/gobuster además tenían una contraseña de DB equivocada y escribían el JSON fuera del proyecto. Kiterunner leía targets desde `reports/sitios.txt` (podía desincronizarse de la tabla `targets`) y guardaba bajo `module='api'`, un id no reconocido por `discover_modules()` — los resultados quedaban invisibles en el frontend aunque el escaneo corriera bien. Los tres quedaron corregidos: consultan `targets` en vivo, usan su module id real, y escriben en `reports/{módulo}/`.
 
-`run_zap_engine()` deduplica alertas por `alert-risk-param` (antes era solo `alert-risk`, lo que descartaba alertas distintas del mismo tipo con distinto parámetro afectado). Para el campo `evidencia`, `_extract_evidencia()` en `owasp.py` resuelve un fallback cuando ZAP no llena `evidence` (pasa en reglas activas basadas en timing/errores, como Path Traversal o SQLi): prioriza el payload real enviado (`attack` + `param`), luego el campo `other` (explicación técnica de ZAP, ej. condiciones booleanas probadas), y por último la URL desnuda. Antes esos casos quedaban como `"N/A"`.
+### Extracción de evidencia en alertas de ZAP (2026-07-06 / 2026-07-07)
+
+`run_zap_engine()` deduplica alertas por `alert-risk-param` (antes era solo `alert-risk`, lo que descartaba alertas distintas del mismo tipo con distinto parámetro afectado). Para el campo `evidencia`, `_extract_evidencia()` en `owasp.py` resuelve un fallback cuando ZAP no llena `evidence` (pasa en reglas activas basadas en timing/errores, como Path Traversal o SQLi): prioriza el payload real enviado (`attack` + `param`), luego el campo `other` (explicación técnica de ZAP, ej. condiciones booleanas probadas), y por último la URL. Antes esos casos quedaban como `"N/A"`; desde 2026-07-07 la URL **siempre** se agrega al final de la evidencia (no solo como fallback), para poder reproducir el hallazgo sin volver a consultar ZAP.
+
+### Active Scan por etapas (2026-07-06)
+
+El active scan corría con las ~53 reglas de la política activa a la vez, enviando ráfagas grandes de payloads "sospechosos" en simultáneo — con un WAF de por medio, eso da pie a que bloquee o limite por volumen antes de que ZAP complete comparaciones diferenciales (ej. SQLi boolean-based, que necesita varias respuestas comparables). `run_zap_engine()` ahora agrupa los scanners por palabra clave en su nombre y corre cada grupo como pasada separada, con una pausa de 15s entre etapas:
+
+```
+sqli        → "sql injection"
+xss         → "cross site scripting", "xss"
+cmd_rce     → "command injection", "code injection", "shell", "remote code execution", ...
+traversal   → "path traversal", "file inclusion", "external entity", "xxe", ...
+misc_inject → "injection", "padding oracle", "soap"
+resto       → todo lo que no matcheó ninguna keyword (headers, info leaks, fuzzing, etc.)
+```
+
+La regla "Cross Site Scripting (DOM Based)" se excluye del ciclo automático: es la única que abre Firefox real vía Selenium, y se cuelga de forma reproducible tras 15-20 min incluso con concurrencia limitada (17.000+ requests sin avanzar, ~60 procesos Firefox/GeckoDriver acumulados). Sigue disponible manual vía la API de ZAP si hace falta.
+
+Dos escaneos de ZAP corriendo a la vez (la cola `heavy` permite concurrencia 2) pisarían la política de reglas compartida si ambos la tocan al mismo tiempo — por eso la fase de active scan por etapas se serializa con un lock de Redis (`anubis:zap_policy_lock`, db=1, timeout 90 min desde 2026-07-07, antes 30 min). Si el ciclo completo tarda más que el timeout, Redis expira el lock solo; el `finally` que lo libera ahora ignora `LockNotOwnedError` en vez de dejar que reviente la extracción de alertas y el guardado de resultados que viene después (bug real: un escaneo completo en producción terminó el active scan al 100% pero perdió todo el resultado por esto).
+
+### Rotación de sesión de ZAP (2026-07-07)
+
+`start_zap()` reusaba la sesión default de ZAP (`untitled1`) indefinidamente entre reinicios del daemon. En producción llegó a pesar **14.6 GB** al no reiniciarse nunca desde el 30 de abril, hasta que el propio ZAP se autoapagó por uso de memoria (monitor interno "Insights", umbral 96%) y descartó la sesión a mitad de un escaneo — sin excepción visible más allá de un error de conexión genérico. Ahora cada arranque del daemon crea una sesión nueva con timestamp (`-newsession /home/anubis/.ZAP/session/anubis_<timestamp>`), y `scripts/cleanup_zap_sessions.sh` (cron diario, `0 4 * * *`) purga las que quedan con más de 3 días, saltando la que esté en uso (detecta el `.lck`).
 
 ### Control de concurrencia en OWASP ZAP
 
@@ -361,6 +400,12 @@ Al inicio de cada `run_zap_engine()` (tanto en `scripts/owasp.py` como en `scrip
 | `HostPerScan` | **1** | Hosts escaneados en paralelo (evita scans simultáneos) |
 
 Esto limita a un máximo de ~4 instancias de Firefox activas simultáneamente, reduciendo el uso de `/tmp` de forma proporcional.
+
+### Progreso en vivo de `fuzz_dirb` (2026-07-07)
+
+`run_dirb()` usaba `subprocess.run(['dirb', ..., '-S'], capture_output=True)`: bloqueante, sin imprimir nada hasta que el proceso completo terminaba. Un escaneo real contra un target con WAF tardó 116 minutos en silencio total — indistinguible de un proceso colgado, y de hecho el timeout de 75 min de `_stream_subprocess` (`tasks.py`) nunca se disparó porque solo se evalúa *después* de que el bucle de lectura de líneas termine, y ese bucle no arrancaba con nada que leer. Ahora corre sin `-S` (dirb reporta cada palabra probada) leyendo la salida en vivo con `Popen`, separando por `\r` en vez de `\n` — dirb emite su progreso como barra de terminal (`\r`), no como líneas (`\n`), así que un `readline()` normal nunca las vería. Cada 25 palabras probadas se publica `[.] DIRB: N rutas probadas (X%)...` por stdout (llega al frontend vía el pubsub de `_stream_subprocess`) y se actualiza `targets.status`.
+
+> Nota: el contador puede superar 100% — cuenta también las palabras reintentadas por recursión en subdirectorios encontrados, no solo las de la wordlist base.
 
 ---
 
@@ -551,9 +596,9 @@ cd frontend && npm run dev
 
 ```bash
 pip install wafw00f
-apt install whatweb nikto
+apt install whatweb nikto dirb gobuster
 apt install libreoffice-writer          # para conversión DOCX → PDF
-# OWASP ZAP: instalar con API activa en localhost:8090
+# OWASP ZAP: instalar con API activa en localhost:9090
 # testssl.sh: en PATH del sistema
 # kiterunner: binario en PATH
 ```
@@ -1060,7 +1105,7 @@ Streaming de logs del orquestador al frontend vía Redis pub/sub (canal `anubis:
 
 ### 6. Scripts de Ataque (`attack_scripts/`)
 
-> **Estado**: Directorio creado. Primer script operativo: `header_exploits.py`.
+> **Estado (2026-07-06)**: sin scripts implementados. `header_exploits.py` — único de los 10 vectores del catálogo que llegó a implementarse (2026-06-17) — se eliminó: el Vector Agent IA (`vector_agent.py`, ver sección siguiente) lo reemplaza con un enfoque más flexible, la IA razona y ejecuta comandos directamente en vez de depender de un script Python fijo por vector. Sin impacto en runs existentes (`attack_results` no tenía ningún registro histórico con `vector_type='header_exploits'`); la regla `header_verify` sigue generando el nodo en el DAG, y el orquestador lo marca `pending`/`skipped` igual que a los otros 9 vectores nunca escritos.
 
 #### Contrato de todos los scripts
 
@@ -1080,7 +1125,6 @@ Evidencias guardadas en: `/home/anubis/AnubisProject/reports/attack/<vector_type
 
 | Script | Estado | Intrusividad | Qué hace |
 |--------|--------|-------------|----------|
-| `header_exploits.py` | ✅ Implementado | active | Verifica cabeceras de seguridad ausentes. Genera HTML PoC de clickjacking si X-Frame-Options falta. Evidencia en `/reports/attack/header_exploits/` |
 | `sqli.py` | ⏳ Pendiente | active | SQLMap contra endpoints marcados por ZAP/Nikto |
 | `sqli_extract.py` | ⏳ Pendiente | exploitive | SQLMap --dump tras confirmar SQLi |
 | `xss_playwright.py` | ⏳ Pendiente | active | Playwright para confirmar XSS con screenshot |
