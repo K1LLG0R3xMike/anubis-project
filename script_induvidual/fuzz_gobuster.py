@@ -10,7 +10,7 @@ from db_findings import save_findings
 # CONFIGURACIÓN
 OUTPUT_DIR = "/home/anubis/AnubisProject/reports/fuzz_gobuster"
 DATABASE_URL = "postgresql://admin:Malware2030$@localhost:5432/ciber_db"
-WORDLIST = "/usr/share/seclists/Discovery/Web-Content/common.txt"
+WORDLIST = "/usr/share/seclists/Discovery/Web-Content/raft-large-directories.txt"
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
