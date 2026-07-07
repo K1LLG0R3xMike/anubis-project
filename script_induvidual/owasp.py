@@ -151,28 +151,30 @@ def _extract_evidencia(a):
     existe en esta API y por eso nunca se usaba). Se prioriza el payload
     real enviado ('attack') junto al parámetro, y la explicación de 'other'
     (ej. condiciones booleanas probadas en una inyección SQL), antes de
-    caer al parámetro/URL desnudos.
+    caer al parámetro/URL desnudos. La URL siempre se agrega (no solo como
+    fallback) para poder reproducir el hallazgo sin volver a ZAP.
     """
     evidencia = (a.get('evidence') or '').strip()
-    if evidencia:
-        return evidencia[:500]
-
     attack = (a.get('attack') or '').strip()
     param = (a.get('param') or '').strip()
     other = (a.get('other') or '').strip().replace('\n', ' ')
+    url = (a.get('url') or '').strip()
 
     partes = []
-    if attack:
+    if evidencia:
+        partes.append(evidencia)
+    elif attack:
         partes.append(f"Payload: {attack}" + (f" (parámetro: {param})" if param else ""))
     elif param:
         partes.append(f"Parámetro afectado: {param}")
+
+    if url:
+        partes.append(f"URL: {url}")
     if other:
         partes.append(other)
 
     if partes:
         return " | ".join(partes)[:500]
-    if a.get('url'):
-        return f"URL: {a['url']}"[:500]
     return "Sin evidencia específica capturada por ZAP"
 
 def run_zap_engine(target_url):
