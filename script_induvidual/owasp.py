@@ -17,6 +17,12 @@ ZAP_PATH = "zaproxy"
 ZAP_API_URL = "http://127.0.0.1:9090"
 API_KEY = "b57r80eafoogrcivehpv83qgp0"
 ZAP_SCAN_POLICY = "Default Policy"
+# Sesión nueva en cada arranque del daemon (ver start_zap): reusar la sesión
+# default ("untitled1") la deja crecer sin límite entre reinicios hasta que
+# ZAP se autoapaga solo por uso de memoria — pasó en producción con una sesión
+# de 14.6 GB nunca reiniciada desde abril. La limpieza de sesiones viejas la
+# hace scripts/cleanup_zap_sessions.sh vía cron, no este script.
+ZAP_SESSION_DIR = "/home/anubis/.ZAP/session"
 
 # Rutas estándar de tu proyecto
 REPORTS_DIR = "/home/anubis/AnubisProject/reports/zap" # Carpeta para los JSON de ZAP
@@ -112,11 +118,13 @@ def start_zap():
         print("[+] ZAP ya está en ejecución.")
     except:
         print("[!] ZAP no detectado. Levantando instancia...")
+        session_path = os.path.join(ZAP_SESSION_DIR, f"anubis_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         subprocess.Popen([
-            ZAP_PATH, "-daemon", "-port", "9090", 
+            ZAP_PATH, "-daemon", "-port", "9090",
             "-config", f"api.key={API_KEY}",
             "-config", "api.addrs.addr.name=127.0.0.1",
-            "-config", "api.addrs.addr.dotNetMask=24"
+            "-config", "api.addrs.addr.dotNetMask=24",
+            "-newsession", session_path
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(20):
             try:
