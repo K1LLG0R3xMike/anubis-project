@@ -191,7 +191,11 @@ def run_zap_engine(target_url):
     wait_for_progress(target_url, "spider", s_data.get('scan'))
 
     # 2. Active Scan por etapas (lock global: ver ZAP_POLICY_LOCK_KEY)
-    lock = _zap_redis.lock(ZAP_POLICY_LOCK_KEY, timeout=1800, blocking_timeout=1800)
+    # timeout=5400 (90 min): un ciclo completo de 6 etapas + pausas puede superar
+    # los 30 min originales en sitios grandes, y si el lock expira solo, Redis
+    # ya se lo dio a otro proceso — liberarlo entonces revienta con
+    # LockNotOwnedError. Se sube el margen y además el release ya no es fatal.
+    lock = _zap_redis.lock(ZAP_POLICY_LOCK_KEY, timeout=5400, blocking_timeout=5400)
     if not lock.acquire():
         update_db_status(target_url, "ZAP: Error - no se pudo reservar la política de ZAP")
         raise RuntimeError("No se pudo adquirir el lock de política de ZAP (otro escaneo lo tuvo reservado 30 min)")
@@ -223,7 +227,13 @@ def run_zap_engine(target_url):
         # no hereda una política a medio acotar.
         requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableAllScanners/",
                      params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
-        lock.release()
+        try:
+            lock.release()
+        except redis.exceptions.LockError:
+            # El lock ya expiró y Redis se lo dio a otro proceso: no hay nada
+            # que liberar, pero eso no debe tirar abajo la extracción de
+            # alertas ni el guardado de resultados que viene después.
+            print("[!] Lock de ZAP ya había expirado al intentar liberarlo (se ignora).")
 
     # 3. Extraer Alertas (Vulnerabilidad, Evidencia, Severidad, ID OWASP)
     alerts = requests.get(f"{ZAP_API_URL}/JSON/core/view/alerts/", params={'apikey': API_KEY, 'baseurl': target_url}).json().get('alerts', [])
