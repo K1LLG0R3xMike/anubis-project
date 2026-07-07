@@ -51,8 +51,6 @@ export default function Targets() {
   const [scanModal, setScanModal]           = useState(null);
   const [launchedModules, setLaunchedModules] = useState({});
   const [selectedScanModules, setSelectedScanModules] = useState([]);
-  const [viewMode, setViewMode]             = useState('grid');
-  const [showMonitor, setShowMonitor]       = useState(false);
   const [modalTab, setModalTab]             = useState('manual');
   const [bulkEntries, setBulkEntries]       = useState([]);
   const [bulkImporting, setBulkImporting]   = useState(false);
@@ -163,8 +161,6 @@ export default function Targets() {
     if (selectedScanModules.length === 0) return;
     const targetUrl = scanModal.url;
     setScanModal(null);
-    setViewMode('list');
-    setShowMonitor(true);
     for (const modId of selectedScanModules) {
       await handleRunScanFromModal(modId, targetUrl);
     }
@@ -297,76 +293,8 @@ export default function Targets() {
               <h2 className="font-headline text-3xl font-bold text-on-background tracking-tight">Objetivos en Radar</h2>
               <p className="text-sm text-on-surface-variant mt-1">Gestiona y monitorea tus endpoints de infraestructura</p>
             </div>
-            <div className="flex gap-1 p-1 rounded-lg bg-surface-container-low border border-outline-variant/20">
-              {[
-                { mode: 'grid', icon: 'grid_view'   },
-                { mode: 'list', icon: 'view_agenda'  },
-              ].map(({ mode, icon }) => (
-                <button key={mode} onClick={() => setViewMode(mode)}
-                  title={mode === 'grid' ? 'Vista cuadrícula' : 'Vista lista'}
-                  className={`w-8 h-8 rounded-md flex items-center justify-center transition-all
-                    ${viewMode === mode
-                      ? 'bg-primary/20 text-primary'
-                      : 'text-on-surface-variant hover:text-on-surface'}`}>
-                  <span className="material-symbols-outlined" style={{ fontSize: 18 }}>{icon}</span>
-                </button>
-              ))}
-            </div>
           </div>
 
-          {/* ── Grid view ── */}
-          {viewMode === 'grid' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-              {targets.map((t) => (
-                <div key={t.id}
-                  className="bg-surface-container-low rounded-2xl border border-outline-variant/20 border-l-2 border-l-primary/40
-                    transition-all duration-200 hover:-translate-y-0.5 hover:border-outline-variant/40 hover:border-l-primary"
-                >
-                  <div className="p-5">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
-                        <span className="material-symbols-outlined text-primary" style={{ fontSize: 18 }}>language</span>
-                      </div>
-                      <span className="font-mono text-[0.6rem] tracking-[0.1em] font-semibold text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5">
-                        {t.status || 'ACTIVE'}
-                      </span>
-                    </div>
-                    <h3 className="font-headline font-bold text-lg text-on-surface mb-1">{t.name}</h3>
-                    <p className="font-mono text-xs text-on-surface-variant truncate">{t.url}</p>
-                  </div>
-                  <div className="px-5 pb-5 flex gap-2">
-                    <button onClick={() => setSelectedTarget(t)}
-                      className="flex-1 py-2 rounded-lg bg-surface-container-highest text-on-surface font-bold text-xs uppercase tracking-[0.05em] hover:bg-surface-bright transition-colors">
-                      Detalles
-                    </button>
-                    <button onClick={() => navigate('/findings', { state: { targetName: t.name } })}
-                      className="flex-1 py-2 rounded-lg bg-primary text-on-primary font-bold text-xs uppercase tracking-[0.05em] hover:bg-primary-dim transition-colors">
-                      Findings
-                    </button>
-                    <button onClick={() => openScanModal(t)}
-                      className="w-9 h-9 rounded-lg border border-primary/30 text-primary flex items-center justify-center hover:bg-primary/10 transition-colors"
-                      title="Lanzar escaneo">
-                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>rocket_launch</span>
-                    </button>
-                    <button onClick={() => deleteTarget(t.id)}
-                      className="w-9 h-9 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error/10 transition-colors">
-                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete_outline</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {targets.length === 0 && (
-                <div className="col-span-3 py-20 text-center border-2 border-dashed border-outline-variant/20 rounded-2xl">
-                  <span className="material-symbols-outlined text-5xl text-outline mb-3 block">radar</span>
-                  <p className="font-headline text-lg text-on-surface-variant">Sin objetivos en radar</p>
-                  <p className="text-xs text-outline mt-1">Añade un objetivo para comenzar</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── List view ── */}
-          {viewMode === 'list' && (
           <div className="flex flex-col lg:flex-row gap-5 items-start">
             <div className="flex-1 min-w-0 w-full rounded-2xl border border-outline-variant/20 overflow-hidden">
               {targets.length === 0 && (
@@ -418,9 +346,8 @@ export default function Targets() {
                 </div>
               ))}
             </div>
-            {showMonitor && <CeleryMonitorPanel onClose={() => setShowMonitor(false)} />}
+            <CeleryMonitorPanel />
           </div>
-          )}
         </>
       )}
 
