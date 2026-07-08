@@ -422,16 +422,6 @@ export default function Dashboard() {
                 </div>
               );
             })}
-
-            {/* Decorative filler bars */}
-            {[14, 9, 18, 6].map((h, i) => (
-              <div key={`fill-${i}`} style={{
-                flex: 1, height: `${h}%`, minHeight: 10,
-                background: 'rgba(154,168,255,0.08)',
-                border: '1px solid rgba(154,168,255,0.12)',
-                borderRadius: '4px 4px 0 0',
-              }} />
-            ))}
           </div>
 
           {/* Chart footer */}
