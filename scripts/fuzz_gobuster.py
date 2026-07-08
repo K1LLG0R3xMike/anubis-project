@@ -48,14 +48,14 @@ def run_gobuster(name, url):
         # Incluimos 200, 204 (éxitos), 301, 302, 307 (redirecciones) y 401, 403 (protegidos)
         # Añadimos un User-Agent real para evitar bloqueos por WAF
         result = subprocess.run([
-            'gobuster', 'dir', 
-            '-u', target_url, 
+            'gobuster', 'dir',
+            '-u', target_url,
             '-w', WORDLIST,
-            '-s', '200,204,301,302,307,401,403', 
+            '-s', '200,204,301,302,307,401,403',
+            '-b', '',
             '-a', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            '-k', 
-            '--no-error', 
-            '-z'
+            '-k',
+            '--no-error'
         ], capture_output=True, text=True)
 
         found_paths = []
