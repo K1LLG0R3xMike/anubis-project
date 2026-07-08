@@ -185,67 +185,17 @@ def _extract_evidencia(a):
         return " | ".join(partes)[:500]
     return "Sin evidencia específica capturada por ZAP"
 
-def run_zap_engine(target_url):
-    target_name = get_target_name_from_db(target_url).lower().replace(" ", "_")
-    print(f"\n🚀 MOTOR OWASP ZAP: {target_url} ({target_name})")
-
-    # Limitar concurrencia: 4 hilos por host, 1 host a la vez (evita acumulación de Firefox en /tmp)
-    requests.get(f"{ZAP_API_URL}/JSON/ascan/action/setOptionThreadPerHost/", params={'apikey': API_KEY, 'Integer': 6})
-    requests.get(f"{ZAP_API_URL}/JSON/ascan/action/setOptionHostPerScan/", params={'apikey': API_KEY, 'Integer': 1})
-
-    # 1. Spider
-    update_db_status(target_url, "ZAP: Iniciando Spider...")
-    s_data = requests.get(f"{ZAP_API_URL}/JSON/spider/action/scan/", params={'apikey': API_KEY, 'url': target_url}).json()
-    wait_for_progress(target_url, "spider", s_data.get('scan'))
-
-    # 2. Active Scan por etapas (lock global: ver ZAP_POLICY_LOCK_KEY)
-    # timeout=5400 (90 min): un ciclo completo de 6 etapas + pausas puede superar
-    # los 30 min originales en sitios grandes, y si el lock expira solo, Redis
-    # ya se lo dio a otro proceso — liberarlo entonces revienta con
-    # LockNotOwnedError. Se sube el margen y además el release ya no es fatal.
-    lock = _zap_redis.lock(ZAP_POLICY_LOCK_KEY, timeout=5400, blocking_timeout=5400)
-    if not lock.acquire():
-        update_db_status(target_url, "ZAP: Error - no se pudo reservar la política de ZAP")
-        raise RuntimeError("No se pudo adquirir el lock de política de ZAP (otro escaneo lo tuvo reservado 30 min)")
-    try:
-        scanners = requests.get(f"{ZAP_API_URL}/JSON/ascan/view/scanners/",
-                                 params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY}).json().get('scanners', [])
-        stages = _group_scanners_into_stages(scanners)
-        stage_order = [name for name, _ in SCAN_STAGE_KEYWORDS] + ["resto"]
-
-        for i, stage_name in enumerate(stage_order):
-            ids = stages.get(stage_name) or []
-            if not ids:
-                continue
-            update_db_status(target_url, f"ZAP: Atacando ({stage_name}, {len(ids)} regla(s))...")
-            requests.get(f"{ZAP_API_URL}/JSON/ascan/action/disableAllScanners/",
-                         params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
-            requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableScanners/",
-                         params={'apikey': API_KEY, 'ids': ','.join(ids), 'scanPolicyName': ZAP_SCAN_POLICY})
-
-            a_data = requests.get(f"{ZAP_API_URL}/JSON/ascan/action/scan/",
-                                   params={'apikey': API_KEY, 'url': target_url, 'recurse': 'true'}).json()
-            wait_for_progress(target_url, "ascan", a_data.get('scan'))
-
-            if i < len(stage_order) - 1:
-                time.sleep(STAGE_PAUSE_SECONDS)
-    finally:
-        # Restaurar la política completa siempre, incluso si una etapa falló —
-        # así el siguiente escaneo (o alguien usando la UI de ZAP directamente)
-        # no hereda una política a medio acotar.
-        requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableAllScanners/",
-                     params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
-        try:
-            lock.release()
-        except redis.exceptions.LockError:
-            # El lock ya expiró y Redis se lo dio a otro proceso: no hay nada
-            # que liberar, pero eso no debe tirar abajo la extracción de
-            # alertas ni el guardado de resultados que viene después.
-            print("[!] Lock de ZAP ya había expirado al intentar liberarlo (se ignora).")
-
-    # 3. Extraer Alertas (Vulnerabilidad, Evidencia, Severidad, ID OWASP)
+def _extract_and_save_alerts(target_url, target_name):
+    """
+    Extrae las alertas ya acumuladas en la sesión de ZAP y las persiste
+    (JSON + save_findings). Se llama siempre desde un finally en
+    run_zap_engine — así un fallo a mitad de spider/active scan no deja el
+    resultado parcial atrapado solo en la sesión de ZAP, como pasó con
+    fundacionserenadelmar.org (escaneo completo, pero excepción antes de
+    este paso hizo que no se guardara nada pese a exit_code=0).
+    """
     alerts = requests.get(f"{ZAP_API_URL}/JSON/core/view/alerts/", params={'apikey': API_KEY, 'baseurl': target_url}).json().get('alerts', [])
-    
+
     vulnerabilities = []
     seen = set()
     for a in alerts:
@@ -265,7 +215,6 @@ def run_zap_engine(target_url):
             })
             seen.add(key)
 
-    # 4. Guardar resultado con formato estándar
     output_file = os.path.join(REPORTS_DIR, f"{target_name}.json")
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump({
@@ -285,6 +234,76 @@ def run_zap_engine(target_url):
             'extra': {'owasp_id': v['owasp_id']}
         })
     save_findings(target_url, 'zap', zap_findings)
+    print(f"✅ Reporte guardado en: {output_file}")
+
+
+def run_zap_engine(target_url):
+    target_name = get_target_name_from_db(target_url).lower().replace(" ", "_")
+    print(f"\n🚀 MOTOR OWASP ZAP: {target_url} ({target_name})")
+
+    try:
+        # Limitar concurrencia: 4 hilos por host, 1 host a la vez (evita acumulación de Firefox en /tmp)
+        requests.get(f"{ZAP_API_URL}/JSON/ascan/action/setOptionThreadPerHost/", params={'apikey': API_KEY, 'Integer': 6})
+        requests.get(f"{ZAP_API_URL}/JSON/ascan/action/setOptionHostPerScan/", params={'apikey': API_KEY, 'Integer': 1})
+
+        # 1. Spider
+        update_db_status(target_url, "ZAP: Iniciando Spider...")
+        s_data = requests.get(f"{ZAP_API_URL}/JSON/spider/action/scan/", params={'apikey': API_KEY, 'url': target_url}).json()
+        wait_for_progress(target_url, "spider", s_data.get('scan'))
+
+        # 2. Active Scan por etapas (lock global: ver ZAP_POLICY_LOCK_KEY)
+        # timeout=5400 (90 min): un ciclo completo de 6 etapas + pausas puede superar
+        # los 30 min originales en sitios grandes, y si el lock expira solo, Redis
+        # ya se lo dio a otro proceso — liberarlo entonces revienta con
+        # LockNotOwnedError. Se sube el margen y además el release ya no es fatal.
+        lock = _zap_redis.lock(ZAP_POLICY_LOCK_KEY, timeout=5400, blocking_timeout=5400)
+        if not lock.acquire():
+            update_db_status(target_url, "ZAP: Error - no se pudo reservar la política de ZAP")
+            raise RuntimeError("No se pudo adquirir el lock de política de ZAP (otro escaneo lo tuvo reservado 30 min)")
+        try:
+            scanners = requests.get(f"{ZAP_API_URL}/JSON/ascan/view/scanners/",
+                                     params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY}).json().get('scanners', [])
+            stages = _group_scanners_into_stages(scanners)
+            stage_order = [name for name, _ in SCAN_STAGE_KEYWORDS] + ["resto"]
+
+            for i, stage_name in enumerate(stage_order):
+                ids = stages.get(stage_name) or []
+                if not ids:
+                    continue
+                update_db_status(target_url, f"ZAP: Atacando ({stage_name}, {len(ids)} regla(s))...")
+                requests.get(f"{ZAP_API_URL}/JSON/ascan/action/disableAllScanners/",
+                             params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
+                requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableScanners/",
+                             params={'apikey': API_KEY, 'ids': ','.join(ids), 'scanPolicyName': ZAP_SCAN_POLICY})
+
+                a_data = requests.get(f"{ZAP_API_URL}/JSON/ascan/action/scan/",
+                                       params={'apikey': API_KEY, 'url': target_url, 'recurse': 'true'}).json()
+                wait_for_progress(target_url, "ascan", a_data.get('scan'))
+
+                if i < len(stage_order) - 1:
+                    time.sleep(STAGE_PAUSE_SECONDS)
+        finally:
+            # Restaurar la política completa siempre, incluso si una etapa falló —
+            # así el siguiente escaneo (o alguien usando la UI de ZAP directamente)
+            # no hereda una política a medio acotar.
+            requests.get(f"{ZAP_API_URL}/JSON/ascan/action/enableAllScanners/",
+                         params={'apikey': API_KEY, 'scanPolicyName': ZAP_SCAN_POLICY})
+            try:
+                lock.release()
+            except redis.exceptions.LockError:
+                # El lock ya expiró y Redis se lo dio a otro proceso: no hay nada
+                # que liberar, pero eso no debe tirar abajo la extracción de
+                # alertas ni el guardado de resultados que viene después.
+                print("[!] Lock de ZAP ya había expirado al intentar liberarlo (se ignora).")
+    finally:
+        # Guardar lo que ZAP ya tenga acumulado pase lo que pase arriba (spider,
+        # active scan o el lock de política pueden fallar a mitad de camino) —
+        # las alertas ya quedaron registradas en la sesión de ZAP en cuanto se
+        # detectan, no solo al terminar el ciclo completo.
+        try:
+            _extract_and_save_alerts(target_url, target_name)
+        except Exception as save_err:
+            print(f"[!] No se pudo extraer/guardar alertas de {target_url}: {save_err}")
 
     update_db_status(target_url, "ZAP: Escaneo Finalizado ✅")
     print(f"✅ Reporte guardado en: {output_file}")
@@ -299,9 +318,14 @@ if __name__ == "__main__":
     with open(TARGETS_FILE, 'r') as f:
         urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
+    had_errors = False
     for url in urls:
         try:
             run_zap_engine(url)
         except Exception as e:
             print(f"[-] Error en {url}: {e}")
             update_db_status(url, "ZAP: Error en escaneo")
+            had_errors = True
+
+    if had_errors:
+        sys.exit(1)
