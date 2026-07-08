@@ -38,6 +38,22 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 _zap_redis = redis.Redis(host='localhost', port=6379, db=1, decode_responses=True)
 ZAP_POLICY_LOCK_KEY = "anubis:zap_policy_lock"
 
+# Archivos multimedia/binarios pesados (grabaciones, videos, backups, docs):
+# el spider los descarga completos para poder analizarlos, y un sitio con
+# varios de estos puede inflar la sesión de ZAP a decenas de GB y hacer que
+# el propio ZAP se autoapague por uso de memoria (pasó con celsia.com: 77GB
+# de sesión y shutdown a los 96% de RAM). Se excluyen por defecto; el
+# checkbox "Exclude multimedia" del front permite desactivarlo por escaneo.
+MEDIA_EXCLUDE_REGEX = r"(?i).*\.(mp3|mp4|wav|avi|mov|mkv|flac|ogg|wmv|iso|zip|rar|7z|pdf|docx?|xlsx?|pptx?)(\?.*)?$"
+
+def _configure_media_exclusion(exclude_media):
+    """Limpia la exclusión previa (session-wide en ZAP) y la vuelve a fijar
+    según lo pedido en esta corrida — así no queda pegada de un escaneo anterior."""
+    requests.get(f"{ZAP_API_URL}/JSON/spider/action/clearExcludedFromScan/", params={'apikey': API_KEY})
+    if exclude_media:
+        requests.get(f"{ZAP_API_URL}/JSON/spider/action/excludeFromScan/",
+                     params={'apikey': API_KEY, 'regex': MEDIA_EXCLUDE_REGEX})
+
 # Grupos de reglas de active scan por palabra clave en el nombre — no se cablean
 # IDs porque cambian entre versiones/addons de ZAP. Cada grupo corre como una
 # pasada separada: reduce el volumen de payloads "sospechosos" enviados en
@@ -237,7 +253,7 @@ def _extract_and_save_alerts(target_url, target_name):
     print(f"✅ Reporte guardado en: {output_file}")
 
 
-def run_zap_engine(target_url):
+def run_zap_engine(target_url, exclude_media=True):
     target_name = get_target_name_from_db(target_url).lower().replace(" ", "_")
     print(f"\n🚀 MOTOR OWASP ZAP: {target_url} ({target_name})")
 
@@ -245,6 +261,7 @@ def run_zap_engine(target_url):
         # Limitar concurrencia: 4 hilos por host, 1 host a la vez (evita acumulación de Firefox en /tmp)
         requests.get(f"{ZAP_API_URL}/JSON/ascan/action/setOptionThreadPerHost/", params={'apikey': API_KEY, 'Integer': 6})
         requests.get(f"{ZAP_API_URL}/JSON/ascan/action/setOptionHostPerScan/", params={'apikey': API_KEY, 'Integer': 1})
+        _configure_media_exclusion(exclude_media)
 
         # 1. Spider
         update_db_status(target_url, "ZAP: Iniciando Spider...")

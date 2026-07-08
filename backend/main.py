@@ -44,12 +44,16 @@ def _enqueue_full_scan(module: str, queue: str):
     task = run_full_scan.apply_async(args=[module], queue=queue)
     return task
 
-def _enqueue_individual_scan(module: str, url: str, queue: str, target_id: int = None):
+def _enqueue_individual_scan(module: str, url: str, queue: str, target_id: int = None, exclude_media: bool = True):
     """Valida deduplicación y encola run_individual_scan en la cola indicada."""
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
     lock_key = f"anubis:scan_lock:individual:{module}:{url_hash}"
     _acquire_scan_lock(lock_key, f"{module}:{url}")
-    task = run_individual_scan.apply_async(args=[module, url], kwargs={"target_id": target_id}, queue=queue)
+    task = run_individual_scan.apply_async(
+        args=[module, url],
+        kwargs={"target_id": target_id, "exclude_media": exclude_media},
+        queue=queue,
+    )
     return task
 
 # --- IMPORTACIONES ---
@@ -320,6 +324,7 @@ def run_full_scan_endpoint(module: str, db: Session = Depends(database.get_db)):
 class IndividualScanRequest(BaseModel):
     url: str
     target_id: Optional[int] = None
+    exclude_media: bool = True
 
 @app.post("/run-individual/{module}")
 def run_individual_scan_endpoint(module: str, request: IndividualScanRequest, db: Session = Depends(database.get_db)):
@@ -327,7 +332,7 @@ def run_individual_scan_endpoint(module: str, request: IndividualScanRequest, db
     if not info or not info["script_individual"]:
         raise HTTPException(status_code=404, detail=f"Módulo '{module}' no disponible para escaneo individual (falta el script en script_induvidual/)")
     queue = get_module_queue(db, module)
-    task = _enqueue_individual_scan(module, request.url, queue, request.target_id)
+    task = _enqueue_individual_scan(module, request.url, queue, request.target_id, request.exclude_media)
     return {
         "message": f"{module.upper()} individual añadido a la cola para {request.url}",
         "task_id": task.id,

@@ -75,7 +75,7 @@ def run_full_scan(module_type: str):
         _scan_redis.delete(f"anubis:scan_lock:{module_type}")
 
 @celery_app.task(name="tasks.run_individual_scan")
-def run_individual_scan(module_type: str, target_url: str, target_id: int = None):
+def run_individual_scan(module_type: str, target_url: str, target_id: int = None, exclude_media: bool = True):
     scripts_dir = "/home/anubis/AnubisProject/script_induvidual"
     script_name = discover_modules().get(module_type, {}).get("script_individual")
     if not script_name:
@@ -85,9 +85,15 @@ def run_individual_scan(module_type: str, target_url: str, target_id: int = None
     channel  = f"anubis:scan:{module_type}:{target_id or url_hash}"
 
     script_path = os.path.join(scripts_dir, script_name)
+    cmd = ['python3', script_path, target_url]
+    # exclude_media solo lo entiende owasp.py (ver MEDIA_EXCLUDE_REGEX) — el
+    # resto de módulos ignora argv extra si no lo usan, pero por ahora solo
+    # zap acepta este flag.
+    if module_type == 'zap' and not exclude_media:
+        cmd.append('--include-media')
     try:
         _log_redis.publish(channel, f"[INICIO] {module_type.upper()} → {target_url}")
-        exit_code = _stream_subprocess(['python3', script_path, target_url], channel)
+        exit_code = _stream_subprocess(cmd, channel)
         status = "completado" if exit_code == 0 else f"error (exit {exit_code})"
         _log_redis.publish(channel, f"[DONE] Escaneo {status}")
         return f"Resultado {module_type} [{target_url}]: exit_code={exit_code}"

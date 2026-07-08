@@ -51,6 +51,7 @@ export default function Targets() {
   const [scanModal, setScanModal]           = useState(null);
   const [launchedModules, setLaunchedModules] = useState({});
   const [selectedScanModules, setSelectedScanModules] = useState([]);
+  const [excludeMedia, setExcludeMedia]     = useState(true);
   const [modalTab, setModalTab]             = useState('manual');
   const [bulkEntries, setBulkEntries]       = useState([]);
   const [bulkImporting, setBulkImporting]   = useState(false);
@@ -137,7 +138,8 @@ export default function Targets() {
   const handleRunScanFromModal = async (type, targetUrl) => {
     setLaunchedModules(prev => ({ ...prev, [type]: 'loading' }));
     try {
-      await axios.post(`${BASE}/run-individual/${type}`, { url: targetUrl });
+      const body = type === 'zap' ? { url: targetUrl, exclude_media: excludeMedia } : { url: targetUrl };
+      await axios.post(`${BASE}/run-individual/${type}`, body);
       setLaunchedModules(prev => ({ ...prev, [type]: 'done' }));
     } catch {
       setLaunchedModules(prev => ({ ...prev, [type]: 'error' }));
@@ -147,6 +149,7 @@ export default function Targets() {
   const openScanModal = (t) => {
     setLaunchedModules({});
     setSelectedScanModules([]);
+    setExcludeMedia(true);
     setScanModal(t);
   };
 
@@ -635,6 +638,20 @@ export default function Targets() {
                 );
               })}
             </div>
+
+            {selectedScanModules.includes('zap') && (
+              <label className="flex items-center gap-2.5 mt-4 p-3 rounded-xl border border-outline-variant/20 bg-surface-container-lowest cursor-pointer">
+                <div className={`w-4 h-4 rounded border shrink-0 flex items-center justify-center transition-colors
+                  ${excludeMedia ? 'bg-primary border-primary' : 'border-outline-variant/50'}`}>
+                  {excludeMedia && <span className="material-symbols-outlined text-on-primary" style={{ fontSize: 11 }}>check</span>}
+                </div>
+                <input type="checkbox" checked={excludeMedia} onChange={e => setExcludeMedia(e.target.checked)} className="hidden" />
+                <div className="min-w-0">
+                  <p className="font-headline text-xs font-bold text-on-surface">Exclude multimedia</p>
+                  <p className="font-mono text-[0.6rem] text-on-surface-variant leading-tight">Evita que ZAP descargue archivos pesados (mp3, mp4, pdf, zip...) — recomendado</p>
+                </div>
+              </label>
+            )}
 
             <button
               onClick={handleLaunchSelected}
