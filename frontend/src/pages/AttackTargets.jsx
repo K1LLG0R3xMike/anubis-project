@@ -3,6 +3,7 @@ import axios from 'axios';
 import AttackPlanViewer from '../components/AttackPlanViewer';
 import LiveTerminal from '../components/LiveTerminal';
 import EvidenceGallery from '../components/EvidenceGallery';
+import CeleryMonitorPanel from '../components/CeleryMonitorPanel';
 
 const BASE = 'http://127.0.0.1:8000';
 
@@ -825,6 +826,8 @@ export default function AttackTargets() {
             )}
           </div>
         </div>
+
+        <CeleryMonitorPanel accentColor={R.primary} panelBg={R.card} tileBg="rgba(10,4,4,0.6)" />
       </div>
 
       {/* Attack Plan + Terminal + Evidence */}

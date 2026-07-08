@@ -12,6 +12,14 @@ const QUEUE_LABEL = {
 
 const shortTaskName = (name = '') => name.split('.').pop();
 
+const hexToRgba = (hex, alpha) => {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+};
+
 const fmtElapsed = (s) => {
   if (s == null) return '—';
   if (s < 60) return `${Math.round(s)}s`;
@@ -20,7 +28,7 @@ const fmtElapsed = (s) => {
   return `${m}m ${rem}s`;
 };
 
-export default function CeleryMonitorPanel({ onClose }) {
+export default function CeleryMonitorPanel({ onClose, accentColor, panelBg, tileBg }) {
   const [data, setData]           = useState(null);
   const [error, setError]         = useState(false);
   const [killing, setKilling]     = useState(false);
@@ -74,10 +82,11 @@ export default function CeleryMonitorPanel({ onClose }) {
   const totals = data?.totals;
 
   return (
-    <div className="w-full lg:w-80 shrink-0 rounded-2xl border border-outline-variant/20 bg-surface-container-low p-5 h-fit lg:sticky lg:top-24">
+    <div className="w-full lg:w-80 shrink-0 rounded-2xl border border-outline-variant/20 bg-surface-container-low p-5 h-fit lg:sticky lg:top-24"
+      style={{ backgroundColor: panelBg, borderColor: accentColor ? hexToRgba(accentColor, 0.3) : undefined }}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined text-primary" style={{ fontSize: 18 }}>dns</span>
+          <span className="material-symbols-outlined text-primary" style={{ fontSize: 18, color: accentColor }}>dns</span>
           <div>
             <p className="font-mono text-[0.58rem] text-on-surface-variant uppercase tracking-[0.18em] leading-none">celery_monitor</p>
             <p className="font-headline text-sm font-bold text-on-surface">Estado de Workers</p>
@@ -97,7 +106,8 @@ export default function CeleryMonitorPanel({ onClose }) {
           {killing ? 'Matando...' : 'Matar tareas'}
         </button>
         <button onClick={handleRestartWorkers} disabled={restarting}
-          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border border-primary/30 text-primary font-bold text-[0.6rem] uppercase tracking-[0.05em] hover:bg-primary/10 transition-colors disabled:opacity-50">
+          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border border-primary/30 text-primary font-bold text-[0.6rem] uppercase tracking-[0.05em] hover:bg-primary/10 transition-colors disabled:opacity-50"
+          style={accentColor ? { borderColor: hexToRgba(accentColor, 0.3), color: accentColor } : undefined}>
           <span className="material-symbols-outlined" style={{ fontSize: 15 }}>restart_alt</span>
           {restarting ? 'Reiniciando...' : 'Reiniciar workers'}
         </button>
@@ -117,15 +127,18 @@ export default function CeleryMonitorPanel({ onClose }) {
       {data && (
         <>
           <div className="grid grid-cols-3 gap-2 mb-5">
-            <div className="rounded-xl bg-surface-container-lowest border border-outline-variant/20 p-3 text-center">
-              <p className="font-headline text-lg font-bold text-primary">{totals.workers_online}</p>
+            <div className="rounded-xl bg-surface-container-lowest border border-outline-variant/20 p-3 text-center"
+              style={{ backgroundColor: tileBg, borderColor: accentColor ? hexToRgba(accentColor, 0.2) : undefined }}>
+              <p className="font-headline text-lg font-bold text-primary" style={{ color: accentColor }}>{totals.workers_online}</p>
               <p className="font-mono text-[0.55rem] text-on-surface-variant uppercase tracking-[0.1em]">workers</p>
             </div>
-            <div className="rounded-xl bg-surface-container-lowest border border-outline-variant/20 p-3 text-center">
+            <div className="rounded-xl bg-surface-container-lowest border border-outline-variant/20 p-3 text-center"
+              style={{ backgroundColor: tileBg, borderColor: accentColor ? hexToRgba(accentColor, 0.2) : undefined }}>
               <p className="font-headline text-lg font-bold text-secondary">{totals.active_tasks}</p>
               <p className="font-mono text-[0.55rem] text-on-surface-variant uppercase tracking-[0.1em]">activas</p>
             </div>
-            <div className="rounded-xl bg-surface-container-lowest border border-outline-variant/20 p-3 text-center">
+            <div className="rounded-xl bg-surface-container-lowest border border-outline-variant/20 p-3 text-center"
+              style={{ backgroundColor: tileBg, borderColor: accentColor ? hexToRgba(accentColor, 0.2) : undefined }}>
               <p className="font-headline text-lg font-bold text-on-surface-variant">{totals.reserved_tasks}</p>
               <p className="font-mono text-[0.55rem] text-on-surface-variant uppercase tracking-[0.1em]">en cola</p>
             </div>
@@ -140,15 +153,19 @@ export default function CeleryMonitorPanel({ onClose }) {
               const busy = w.active_tasks.length > 0;
               return (
                 <div key={w.hostname}
-                  className="rounded-xl border border-outline-variant/20 bg-surface-container-lowest p-3.5">
+                  className="rounded-xl border border-outline-variant/20 bg-surface-container-lowest p-3.5"
+                  style={{ backgroundColor: tileBg, borderColor: accentColor ? hexToRgba(accentColor, 0.2) : undefined }}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full shrink-0"
-                        style={{ backgroundColor: busy ? meta.color : '#9aa8ff', boxShadow: `0 0 6px ${busy ? meta.color : '#9aa8ff'}` }} />
+                        style={{ backgroundColor: busy ? meta.color : (accentColor || '#9aa8ff'), boxShadow: `0 0 6px ${busy ? meta.color : (accentColor || '#9aa8ff')}` }} />
                       <p className="font-headline text-xs font-bold text-on-surface">{meta.label}</p>
                     </div>
                     <span className="font-mono text-[0.55rem] font-semibold uppercase tracking-[0.08em] px-1.5 py-0.5 rounded"
-                      style={{ color: busy ? meta.color : '#9aa8ff', background: busy ? `${meta.color}1a` : 'rgba(154,168,255,0.1)' }}>
+                      style={{
+                        color: busy ? meta.color : (accentColor || '#9aa8ff'),
+                        background: busy ? `${meta.color}1a` : (accentColor ? hexToRgba(accentColor, 0.1) : 'rgba(154,168,255,0.1)'),
+                      }}>
                       {busy ? 'ejecutando' : 'idle'}
                     </span>
                   </div>
@@ -159,9 +176,10 @@ export default function CeleryMonitorPanel({ onClose }) {
                   ) : (
                     <div className="space-y-1.5">
                       {w.active_tasks.map((t) => (
-                        <div key={t.id} className="px-2 py-1.5 rounded-lg bg-primary/5 border border-primary/15">
+                        <div key={t.id} className="px-2 py-1.5 rounded-lg bg-primary/5 border border-primary/15"
+                          style={accentColor ? { backgroundColor: hexToRgba(accentColor, 0.05), borderColor: hexToRgba(accentColor, 0.15) } : undefined}>
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-[0.62rem] text-primary font-semibold truncate">{t.tool || shortTaskName(t.name)}</span>
+                            <span className="font-mono text-[0.62rem] text-primary font-semibold truncate" style={{ color: accentColor }}>{t.tool || shortTaskName(t.name)}</span>
                             <span className="font-mono text-[0.55rem] text-on-surface-variant shrink-0">{fmtElapsed(t.elapsed_seconds)}</span>
                           </div>
                           {t.detail && (
@@ -170,7 +188,8 @@ export default function CeleryMonitorPanel({ onClose }) {
                         </div>
                       ))}
                       {w.reserved_tasks.map((t) => (
-                        <div key={t.id} className="px-2 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant/15">
+                        <div key={t.id} className="px-2 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant/15"
+                          style={{ backgroundColor: panelBg, borderColor: accentColor ? hexToRgba(accentColor, 0.15) : undefined }}>
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-mono text-[0.62rem] text-on-surface-variant font-semibold truncate">{t.tool || shortTaskName(t.name)}</span>
                             <span className="font-mono text-[0.55rem] text-outline shrink-0 uppercase">en espera</span>
