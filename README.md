@@ -388,6 +388,16 @@ Dos escaneos de ZAP corriendo a la vez (la cola `heavy` permite concurrencia 2) 
 
 `start_zap()` reusaba la sesión default de ZAP (`untitled1`) indefinidamente entre reinicios del daemon. En producción llegó a pesar **14.6 GB** al no reiniciarse nunca desde el 30 de abril, hasta que el propio ZAP se autoapagó por uso de memoria (monitor interno "Insights", umbral 96%) y descartó la sesión a mitad de un escaneo — sin excepción visible más allá de un error de conexión genérico. Ahora cada arranque del daemon crea una sesión nueva con timestamp (`-newsession /home/anubis/.ZAP/session/anubis_<timestamp>`), y `scripts/cleanup_zap_sessions.sh` (cron diario, `0 4 * * *`) purga las que quedan con más de 3 días, saltando la que esté en uso (detecta el `.lck`).
 
+### Persistencia de resultados aunque el escaneo falle a mitad de camino (2026-07-08)
+
+`run_zap_engine()` (`scripts/owasp.py` y `script_induvidual/owasp.py`) solo extraía las alertas de ZAP y llamaba a `save_findings()` al final del flujo feliz, después del spider y las 6 etapas del active scan. Si algo fallaba antes de llegar ahí (excepción durante el spider, un timeout de etapa, el lock de política de ZAP, etc.), el bloque `try/except` del `__main__` atrapaba el error, actualizaba el status a "ZAP: Error en escaneo" y listo — pero como nunca hacía `sys.exit(1)`, el proceso salía con `exit_code=0` y Celery lo registraba como éxito. Las alertas ya detectadas por ZAP quedaban atrapadas solo en la sesión, sin JSON ni fila en `findings`.
+
+Esto pasó en producción con `fundacionserenadelmar.org`: el escaneo corrió ~1h52m y terminó con `exit_code=0`, pero no generó `reports/zap/fundacion.json` ni guardó nada en la DB. Cargando la sesión de ZAP de ese día se recuperaron 73 hallazgos únicos, incluidas **22 alertas de SQL Injection (High)** sobre distintos parámetros de un WordPress — datos reales que habían quedado invisibles en el frontend.
+
+Dos cambios:
+- El bloque de extracción + guardado se movió a `_extract_and_save_alerts()` y ahora se llama siempre desde un `finally` que envuelve todo `run_zap_engine()` (spider + active scan), así se persiste lo que ZAP ya tenga acumulado sin importar en qué punto falló el escaneo. Si el guardado mismo falla, se loguea sin tapar la excepción original.
+- Los bloques `__main__` de ambos scripts ahora hacen `sys.exit(1)` cuando `run_zap_engine()` lanza una excepción (en `scripts/owasp.py`, que escanea todos los targets en un loop, se acumula en una bandera `had_errors` y se sale con 1 al final si algún target falló), para que un fallo real ya no se reporte como éxito.
+
 ### Control de concurrencia en OWASP ZAP
 
 ZAP lanza instancias de Firefox headless (vía GeckoDriver) durante el active scan. Sin límite, un escaneo multi-target puede acumular decenas de procesos Firefox en `/tmp` y llenar la partición.
