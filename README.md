@@ -186,6 +186,7 @@ systemctl --user start anubis-celery-attack   # attack
 |--------|------|------|-------------|
 | `POST` | `/run-{module}` | — | Módulo en todos los targets (genérico, reemplaza los 6 endpoints hardcodeados `/run-waf`, `/run-zap`, etc. desde 2026-07-06) |
 | `POST` | `/run-individual/{module}` | `{url, target_id?}` | Módulo en 1 target |
+| `POST` | `/upload-script` | `multipart/form-data`: `file` (.py), `destination` (`full`\|`individual`) | Sube un script nuevo a `scripts/` o `script_induvidual/` — lo detecta `discover_modules()` sin reiniciar nada |
 
 `{module}` no es una lista fija: `discover_modules()` (`backend/scan_modules.py`) escanea `scripts/` y `script_induvidual/` en cada llamada y expone cualquier `.py` nuevo automáticamente (subido a mano o vía `/upload-script`), sin tocar código ni reiniciar nada. Módulos actuales: `waf`, `whatweb`, `headers`, `certs`, `nikto`, `zap`, `kiterunner`, `fuzz_dirb`, `fuzz_gobuster`.
 
@@ -208,7 +209,8 @@ Antes de 2026-07-06 existían cinco listas hardcodeadas independientes (`SCRIPT_
 | `DELETE` | `/reports/{id}` | — | Elimina un reporte |
 | `GET` | `/reports/{id}/download` | — | Descarga PDF (generado vía DOCX → LibreOffice) |
 | `GET` | `/reports/{id}/download/docx` | — | Descarga DOCX |
-| `POST` | `/reports/{id}/ai-analyze` | — | Dispara análisis IA asíncrono (Celery) |
+| `POST` | `/reports/{id}/ai-analyze` | — | Dispara análisis IA asíncrono (Celery), llena `ai_content.markdown_report` |
+| `POST` | `/reports/{id}/ai-enhance` | `AIEnhanceRequest` (campos opcionales: `executive_summary`, `risk_narrative`, `business_impact`, `remediation_timeline`, `recommendations`, `compliance_gaps`, `compliance_narrative`, `ai_model`) | Inyecta contenido parcial en `ai_content` — solo sobrescribe los campos enviados. Pensado para que el agente IA empuje secciones sueltas sin pasar por `ai-analyze` completo |
 
 **Valores de `report_type`**: `"executive"`, `"technical"`, `"compliance"`, `"full"`
 **Valores de `scope`**: `"single"` (usa `target_ids`), `"all"` (todos los targets)
@@ -238,6 +240,7 @@ Valores de `repeat`: `"once"`, `"daily"`, `"weekly"`, `"monthly"`
 | `GET` | `/system/celery-status` | Estado en vivo de los workers Celery: por cada hostname (`light@`, `heavy@`, `attack@`) devuelve si está online, sus tareas activas (con `elapsed_seconds`) y las reservadas/en espera. Usa `celery_app.control.inspect()` con timeout de 2s. |
 | `POST` | `/system/celery/kill-all` | Revoca (SIGKILL) todas las tareas activas/en cola de todas las colas y las purga del broker. Además mata por patrón los procesos huérfanos de `dirb`/`gobuster`/`nikto`/`kiterunner` y los wrappers `script_induvidual/*.py`, que un `revoke` normal no alcanza porque corren como nietos del worker (ver nota de `fuzz_dirb` más abajo). No toca el daemon de ZAP. |
 | `POST` | `/system/celery/restart-workers` | Reinicia los servicios systemd `anubis-celery` (light), `anubis-celery-heavy` y `anubis-celery-attack`. No toca `beat` ni el daemon de ZAP. |
+| `WS` | `/ws/scan/{module}/{target_id}` | Streaming en vivo de un escaneo individual: suscribe al canal Redis `anubis:scan:{module}:{target_id}` (mismo canal que publica `_stream_subprocess` en `tasks.py`) y reenvía cada línea al frontend. Se cierra solo al ver `[DONE]` o `[ERROR]` en el mensaje. |
 
 Consumido por el panel **Estado de Workers** (`frontend/src/components/CeleryMonitorPanel.jsx`) en `Targets`, junto a la lista de targets — **siempre visible** (antes solo aparecía tras lanzar un escaneo). Hace polling cada 3s. Debajo del header incluye los botones **Matar tareas** y **Reiniciar workers**, cada uno con confirmación antes de ejecutar.
 
@@ -536,7 +539,7 @@ beat_schedule  = {"check-schedules-every-60s": {"task": "tasks.check_and_run_sch
 | `id` | Integer PK | |
 | `name` | String | nombre legible |
 | `url` | String UNIQUE | |
-| `status` | String | `Pendiente`, `Escaneando`, `Completado`, `Error` |
+| `status` | String | **No es un enum fijo** — cada módulo escribe su propio mensaje de progreso vía `update_db_status()` (ej. `"ZAP spider: 36%"`, `"Nikto: 5 hallazgos"`, `"Fuzzing DIRB: 13350 probadas (289%)"`, `"WAF: Incapsula"`, `"ZAP: Escaneo Finalizado ✅"`). No hay valores cerrados que validar en el frontend. |
 | `last_scan` | DateTime | |
 | `waf_detected` | String | nombre del WAF detectado |
 
@@ -551,6 +554,7 @@ beat_schedule  = {"check-schedules-every-60s": {"task": "tasks.check_and_run_sch
 | `title` | String | |
 | `description` | Text | |
 | `extra` | Text (JSON) | datos adicionales |
+| `confidence` | Float | nullable, 0.0–1.0 — retroalimentada por `attack_results` (ver "Retroalimentación de confianza") |
 | `scan_date` | DateTime | |
 
 ### Tabla `schedules`
@@ -558,11 +562,21 @@ beat_schedule  = {"check-schedules-every-60s": {"task": "tasks.check_and_run_sch
 | Columna | Tipo | Notas |
 |---------|------|-------|
 | `id` | Integer PK | |
+| `target_id` | Integer | nullable, **legacy** — reemplazado por `target_ids`, se mantiene solo por compatibilidad con schedules viejos |
 | `target_ids` | Text | JSON array: `"[1, 2, 3]"` |
 | `module` | Text | JSON array: `'["waf", "nikto"]'` |
 | `scheduled_at` | String | ISO datetime |
 | `repeat` | String | `once`, `daily`, `weekly`, `monthly` |
 | `last_run` | Text | ISO del último run |
+
+### Tabla `scan_module_configs`
+
+| Columna | Tipo | Notas |
+|---------|------|-------|
+| `id` | Integer PK | |
+| `module_id` | String(50) UNIQUE | id del módulo (`zap`, `nikto`, `waf`, ...) |
+| `queue` | String(20) | `light` \| `heavy` — override persistido de `get_module_queue()`, ver "Scan Engine" |
+| `updated_at` | DateTime(tz) | |
 
 ### Tabla `reports`
 
@@ -596,11 +610,14 @@ El script crea el venv del backend, instala `backend/requirements.txt`, corre `n
 
 ```bash
 systemctl --user start anubis-backend          # FastAPI en puerto 8000
-systemctl --user start anubis-celery           # Worker cola light + Beat
+systemctl --user start anubis-celery           # Worker cola light (waf, whatweb, headers, certs)
 systemctl --user start anubis-celery-heavy     # Worker cola heavy (zap, nikto, vector_agent)
 systemctl --user start anubis-celery-attack    # Worker cola attack (execute_attack_run)
+systemctl --user start anubis-celery-beat      # Scheduler — publica tasks.check_and_run_schedules cada 60s
 systemctl --user start anubis-frontend         # Vite dev server en puerto 5173
 ```
+
+> `anubis-celery-beat` es un servicio propio, no parte de `anubis-celery` — corren como procesos systemd independientes aunque ambos compartan `celery_app.py`.
 
 ### Manual
 
@@ -629,8 +646,8 @@ pip install wafw00f
 apt install whatweb nikto dirb gobuster
 apt install libreoffice-writer          # para conversión DOCX → PDF
 # OWASP ZAP: instalar con API activa en localhost:9090
-# testssl.sh: en PATH del sistema
-# kiterunner: binario en PATH
+# testssl.sh: el comando invocado es `testssl` (no `testssl.sh`), debe estar en PATH
+# kiterunner: el comando invocado es `kr` (no `kiterunner`), debe estar en PATH
 ```
 
 ---
@@ -1080,6 +1097,16 @@ Salida stdout (JSON) al terminar:
 | `started_at` / `completed_at` | DateTime(tz) | |
 | `created_at` | DateTime(tz) | |
 
+#### `ai_attack_plans`
+
+| Columna | Tipo | Notas |
+|---------|------|-------|
+| `id` | Integer PK | |
+| `target_id` | Integer | FK → targets |
+| `plan_json` | Text | JSON completo devuelto por la IA (ver "AI Attack Planner") |
+| `vector_count` | Integer | `len(plan["vectores"])`, cacheado al generar |
+| `generated_at` | DateTime(tz) | |
+
 #### Cambio en tabla `findings`
 
 Se añadió la columna `confidence (Float, nullable)` para permitir que el orquestador retroalimente la confianza de cada hallazgo.
@@ -1111,6 +1138,15 @@ ALTER TABLE findings ADD COLUMN confidence FLOAT;
 | `GET` | `/attack/runs/{id}` | — | Detalles del run + `node_count` + `result_count` + `plan_json` |
 | `POST` | `/attack/runs/{id}/abort` | — | Pone `abort_requested=True` y `status="aborted"` |
 | `GET` | `/attack/runs/{id}/results` | — | Lista `AttackResult` del run |
+
+#### AI Attack Planner
+
+| Método | Ruta | Body / Params | Descripción |
+|--------|------|--------------|-------------|
+| `POST` | `/attack/ai-plan/{target_id}` | — | Lee los `findings` del target, le pide a la IA un plan de ataque priorizado en JSON (`resumen`, `razonamiento`, `vectores[]` con `prioridad`/`intrusividad`/`justificacion`/`depende_de`) y lo persiste en `ai_attack_plans` |
+| `GET` | `/attack/ai-plan/{target_id}` | — | Devuelve el plan IA más reciente generado para ese target (o `null` si no hay ninguno) |
+
+Es un plan narrativo pensado para que el operador lo lea y decida — no construye el `AttackPlan` DAG directamente ni encola nada; el `POST /attack/runs` (DAG estructurado por reglas) sigue siendo el camino para ejecutar.
 
 #### WebSocket — Terminal en vivo
 
@@ -1190,6 +1226,14 @@ tasks.py: run_vector_agent_task()
             ├─ Si accion="ejecutar_comando": valida + ejecuta en bash
             └─ Si accion="finalizar": guarda resultado y rompe el loop
 ```
+
+#### Lanzar y consultar un vector run
+
+| Método | Ruta | Body / Params | Descripción |
+|--------|------|--------------|-------------|
+| `POST` | `/attack/vector-run` | `VectorRunCreate`: `{target_id, vector: dict, mode: "quick"\|"full", instructions?}` | Crea el `VectorRun` en estado `pending` y encola `run_vector_agent_task` en la cola `heavy` |
+| `GET` | `/attack/vector-run/{run_id}` | — | Estado y resultado de un run puntual (`estado`, `resumen`, `evidencia_tecnica`, `comando_clave`, etc.) |
+| `GET` | `/attack/vector-runs` | `estado?`, `target_id?` | Lista runs completados, enriquecidos con datos del target |
 
 #### Modos de ejecución
 
