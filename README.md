@@ -330,24 +330,32 @@ npm run build
 
 ### Sistema de Modos (Scan / Attack)
 
-El logo de la cabecera es un **switch de modo**. Al hacer clic cambia entre:
+> **Cambio de arquitectura**: hasta 2026-06-xx, Scan y Attack compartían la misma ruta y `Dashboard.jsx`/`AttackDashboard.jsx` se elegían en base a `isAttack`. Desde que se agregaron `AttackTargets.jsx`, `AttackFindings.jsx`, `AttackHistorical.jsx`, `AttackSchedule.jsx` y `AttackReports.jsx`, **cada página de Attack vive en su propia ruta bajo `/attack/*`**, con su propio componente completo (no una variante visual del componente Scan) — ver tabla de rutas abajo.
+
+El logo de la cabecera es un **switch de modo**. Al hacer clic:
+
+1. `ModeContext.jsx` alterna el estado `mode` (`scan` ↔ `attack`) — se inicializa leyendo si `window.location.pathname` empieza con `/attack`.
+2. `Layout.jsx` traduce la ruta actual a su espejo en el otro árbol vía un mapa fijo (`/targets` ↔ `/attack/targets`, `/findings` ↔ `/attack/findings`, etc.) y navega ahí con `useNavigate()`.
+3. El sidebar renderiza `scanNav` o `attackNav` (mismos 6 items, `path` distinto) según el modo activo.
 
 - **Anubis Scan** (tema azul `#9aa8ff`): interfaz estándar de análisis defensivo
-- **Anubis Attack** (tema rojo `#FF3131`): dashboard de pentesting con mapa de vulnerabilidades
+- **Anubis Attack** (tema rojo `#FF3131`): páginas de pentesting independientes, cada una con su propia paleta hardcodeada (no heredan un theme compartido vía contexto — cada archivo `Attack*.jsx` define sus propios valores `R.primary = '#FF3131'`, etc.)
 
-El estado de modo vive en `ModeContext.jsx` y es accesible en cualquier componente con `useMode()`. `Layout.jsx` aplica los temas dinámicamente usando dos objetos de tema (`SCAN_THEME` / `ATTACK_THEME`).
+`Layout.jsx` sigue aplicando el tema de la barra lateral/header dinámicamente (`SCAN_THEME` / `ATTACK_THEME`); lo que cambió es que el *contenido* de cada página ya no es una variante del mismo componente, sino un archivo separado.
 
 ### Páginas y Rutas
 
-| Ruta | Archivo | Funcionalidad |
-|------|---------|---------------|
-| `/login` | `Login.jsx` | Login. Credenciales: `admin` / `anubis2026` |
-| `/dashboard` | `Dashboard.jsx` / `AttackDashboard.jsx` | KPIs, targets, hallazgos (varía según modo) |
-| `/targets` | `Targets.jsx` | CRUD targets, escaneo por módulo (lista de módulos auto-detectada vía `/system/scan-modules`), subida de scripts, monitor de workers Celery siempre visible junto a la lista (sin vista de cuadrícula, solo lista, desde 2026-07-07) |
-| `/findings` | `Findings.jsx` | Findings por target y módulo con severidad. ZAP, Nikto y los módulos genéricos colapsan los hallazgos Low/Informational detrás de un botón "Ver N hallazgos de severidad baja / informativa" (2026-07-06), mostrando por defecto solo Medium/High/Critical. Módulos sin tabla a medida (`fuzz_dirb`, `fuzz_gobuster`, y cualquier script futuro conectado a `save_findings()`) generan su sección automáticamente vía `GET /findings/target/{id}` — no requieren tocar el frontend |
-| `/historical` | `Historical.jsx` | Timeline histórico, comparación antes/después |
-| `/schedule` | `Schedule.jsx` | Calendario, schedules recurrentes multi-módulo |
-| `/reports` | `Reports.jsx` | Generación, listado, descarga PDF/DOCX, análisis IA |
+| Ruta Scan | Ruta Attack | Archivo(s) | Funcionalidad |
+|-----------|-------------|------------|---------------|
+| `/login` | — | `Login.jsx` | Login. Credenciales: `admin` / `anubis2026` |
+| `/dashboard` | `/attack/dashboard` | `Dashboard.jsx` / `AttackDashboard.jsx` | KPIs, targets, hallazgos |
+| `/targets` | `/attack/targets` | `Targets.jsx` / `AttackTargets.jsx` | CRUD targets, escaneo por módulo (lista auto-detectada vía `/system/scan-modules`), subida de scripts, monitor de workers Celery siempre visible junto a la lista. `AttackTargets.jsx` (1169 líneas, la página Attack más grande) además embebe `AttackPlanViewer`, `LiveTerminal`, `EvidenceGallery` y `CeleryMonitorPanel` con tema rojo |
+| `/findings` | `/attack/findings` | `Findings.jsx` / `AttackFindings.jsx` | Findings por target y módulo con severidad. ZAP, Nikto y los módulos genéricos colapsan Low/Informational detrás de un botón "Ver N hallazgos...", mostrando por defecto solo Medium/High/Critical. `AttackFindings.jsx` lista además los `vector_runs` ejecutados, con badge de modo (`quick`/`full`) |
+| `/historical` | `/attack/historical` | `Historical.jsx` / `AttackHistorical.jsx` | Timeline histórico, comparación antes/después |
+| `/schedule` | `/attack/schedule` | `Schedule.jsx` / `AttackSchedule.jsx` | Calendario, schedules recurrentes multi-módulo |
+| `/reports` | `/attack/reports` | `Reports.jsx` / `AttackReports.jsx` | Generación, listado, descarga PDF/DOCX, análisis IA |
+
+Las rutas Attack no son alias de las Scan: son componentes independientes en `frontend/src/pages/`, cada uno con su propia lógica de fetch/estado — un cambio en `Targets.jsx` no se refleja automáticamente en `AttackTargets.jsx`.
 
 ### Animaciones CSS (`index.css`)
 
@@ -743,28 +751,35 @@ Si el reporte no tiene `markdown_report` (análisis IA pendiente), el DOCX/PDF s
 
 ## Modo Ataque — UI
 
-> **Actualización 2026-06-17**: El `AttackDashboard` ahora incluye un panel de control de ataque funcional con selector de target/intrusividad, gestión de autorizaciones, y visualización en tiempo real del plan, terminal y evidencias.
-> **Actualización 2026-06-18**: El modal de ejecución de vectores muestra terminal y resultado en split-view.
+> **Cambio de arquitectura (posterior a las actualizaciones 2026-06-17/18 de abajo, no hay commit puntual identificado)**: el "Attack Control Panel" completo — selector de target/intrusividad, autorizaciones, Launch/Abort, `AttackPlanViewer`, `LiveTerminal`, `EvidenceGallery` — **se movió de `AttackDashboard.jsx` a `AttackTargets.jsx`** (`/attack/targets`). Verificado por import: ninguno de esos tres componentes aparece en `AttackDashboard.jsx`; los cuatro (los tres + `CeleryMonitorPanel`) están únicamente en `AttackTargets.jsx`. Lo que queda documentado abajo como histórico (2026-06-17/18) describe funcionalidad que existe, pero hoy vive en la página de Targets, no en el Dashboard.
 
-Accesible haciendo clic en el logo de Anubis en la cabecera. Cambia toda la interfaz a un tema rojo con el `AttackDashboard`:
+Accesible haciendo clic en el logo de Anubis en la cabecera, que navega de `/dashboard` a `/attack/dashboard` (ver "Sistema de Modos" en Frontend). Cambia toda la interfaz a un tema rojo.
+
+### `AttackDashboard.jsx` (`/attack/dashboard`) — hoy es solo overview
 
 - **Stat cards**: targets activos, vulnerabilidades totales, estado del sistema
-- **Barra de severidad**: distribución visual de hallazgos crítico/alto/medio/bajo
-- **Lista de targets**: con su último estado de escaneo
-- **Mapa de nodos**: representación SVG de targets con líneas de conexión y puntos pulsantes por vulnerabilidad
-- **Terminal FAB**: botón flotante de acceso rápido
-- **Attack Control Panel**: panel completo de pentesting con:
-  - Selector de target + nivel de intrusividad (passive/active/exploitive)
-  - Gestión de autorizaciones (registro de `authorized_targets`, filtrado de vigentes)
-  - Botón Launch que llama `POST /attack/runs` y recibe el plan DAG construido
-  - **AttackPlanViewer**: lista de nodos del DAG con estado en tiempo real, badges de intrusividad y retroalimentación de confianza
-  - **LiveTerminal**: terminal WebSocket que hace streaming de los logs del orquestador Celery vía Redis pub/sub
-  - **EvidenceGallery**: grid de evidencias capturadas (paths a screenshots, JSON dumps)
-  - Botón Abort para señalizar parada cooperativa entre nodos
+- **Severity Distribution**: distribución visual de hallazgos crítico/alto/medio/bajo
+- **Node Vulnerability Map**: representación SVG de targets con líneas de conexión y puntos pulsantes por vulnerabilidad
 
-### Modal de ejecución de vectores — split view (2026-06-18)
+> **Tres botones decorativos sin función** (confirmado: cero ocurrencias de `onClick` en todo `AttackDashboard.jsx`): **"Export Reports"**, **"QUICK SCAN"** y el **Terminal FAB** (esquina inferior derecha) están renderizados pero no hacen nada al hacer clic — ni abren un modal, ni navegan, ni llaman a un endpoint.
 
-Al ejecutar un vector desde el plan IA, el modal pasa por tres fases:
+Ya no tiene selector de target/intrusividad, gestión de autorizaciones, ni botón Launch/Abort — todo eso está en `AttackTargets.jsx`.
+
+### `AttackTargets.jsx` (`/attack/targets`) — Attack Control Panel real
+
+Panel completo de pentesting:
+- Selector de target + nivel de intrusividad (`passive`/`active`/`exploitive`)
+- Gestión de autorizaciones: formulario que llama `POST /authorized-targets`, lista filtrable de vigentes
+- Botón **Launch** que llama `POST /attack/runs` y recibe el plan DAG construido
+- **AttackPlanViewer**: lista de nodos del DAG con estado en tiempo real, badges de intrusividad y retroalimentación de confianza
+- **LiveTerminal**: terminal WebSocket (`/ws/attack/{run_id}`) que hace streaming de los logs del orquestador vía Redis pub/sub
+- **EvidenceGallery**: grid de evidencias capturadas (paths a screenshots, JSON dumps)
+- Botón **Abort** (`POST /attack/runs/{id}/abort`) para señalizar parada cooperativa entre nodos
+- **CeleryMonitorPanel** con tema rojo (agregado 2026-07-09) — el mismo panel de estado de workers que en `/targets`, pero re-skinneado
+
+### Modal de ejecución de vectores — split view
+
+Vive en `AttackTargets.jsx`. Al ejecutar un vector desde el plan IA, el modal pasa por tres fases (`vectorRunPhase`):
 
 | Fase | Ancho modal | Layout |
 |------|-------------|--------|
@@ -778,7 +793,9 @@ En la fase `done` el panel derecho muestra: badge de estado (EXPLOTABLE / NO EXP
 
 ## Anubis Attack — Arquitectura del Módulo de Explotación
 
-Esta sección documenta las dos piezas de infraestructura que sustentan el backend del módulo de ataque: el **modelo de autorización** y el **plan de ataque como DAG**. Ambas deben estar en producción antes de implementar o conectar los scripts de explotación individuales.
+Esta sección documenta las dos piezas de infraestructura que sustentan el backend del módulo de ataque: el **modelo de autorización** y el **plan de ataque como DAG**. El DAG en sí (secciones 2-3) quedó como infraestructura sin consumidor real de ejecución — ver sección 6 para el porqué (el enfoque de scripts individuales que dispatchaba se abandonó a favor del Vector Agent).
+>
+> ⚠️ **Gap real de seguridad, no solo de documentación**: `validate_scope()` (la compuerta de autorización) es llamada **únicamente** desde `execute_attack_run()`, el path del DAG que hoy no ejecuta nada real (sección 6). El flujo que sí ejecuta comandos reales contra el target — `POST /attack/vector-run` → `run_vector_agent_task()` → `run_vector_agent()` — **no llama a `validate_scope()` en ningún punto** (verificado: `validate_scope` solo aparece referenciado en `attack_orchestrator.py`, en ningún otro archivo). El único control de scope que le queda al Vector Agent es el contrato ético dentro del prompt del LLM (`SYSTEM_PROMPT_BASE`, "PERMANECE en el scope autorizado") — no hay enforcement de código equivalente a `authorized_targets`/`valid_until`/`allowed_intrusiveness` en esta vía.
 
 Los archivos relevantes son:
 
@@ -922,19 +939,22 @@ findings del scan:
 
 DAG resultante (max_intrusiveness="exploitive"):
 
-  sqli_verify_42  ──provides db_read_access──►  sqli_extract_capability
-  auth_bruteforce_55  ──provides authenticated_session──►  idor_enumerate_?
-                                                         ►  priv_escalation_capability
-  cve_exploit_61  ──provides rce_access──►  post_rce_loot_capability
+  sqli_verify_42      ──provides db_read_access──────►  sqli_extract_capability
+  auth_bruteforce_55  ──provides authenticated_session─►  priv_escalation_capability
+  cve_exploit_61      ──provides rce_access───────────►  post_rce_loot_capability
 ```
 
+Con estos 3 findings, `idor_enumerate` **no** entra al plan aunque `authenticated_session` esté disponible: a diferencia de `sqli_extract`/`priv_escalation`/`post_rce_loot` (capability-triggered puros, `conditions=[]`), `idor_enumerate` tiene su propia condición (`title__contains: "idor"`) además de `requires_capabilities` — necesita las dos cosas. Es justamente la diferencia entre `requires_nodes` y `requires_capabilities` que se explica abajo.
+
+`priority_score = base_priority × SEVERITY_WEIGHT[severity] × finding_confidence` (ver fórmula más abajo). Con los valores reales de `VECTOR_RULES`:
+
 Orden de ejecución (topológico por priority_score):
-1. `cve_exploit_61` (score=270.0) — sin dependencias, mayor prioridad
-2. `sqli_verify_42` (score=140.0) — sin dependencias
-3. `auth_bruteforce_55` (score=98.0) — sin dependencias
+1. `cve_exploit_61` (base 3.0 × critical 10 × 0.9 = **27.0**) — sin dependencias, mayor prioridad
+2. `sqli_verify_42` (base 2.5 × critical 10 × 0.8 = **20.0**) — sin dependencias
+3. `auth_bruteforce_55` (base 2.0 × high 7 × 0.7 = **9.8**) — sin dependencias
 4. `post_rce_loot_capability` — espera `rce_access` (de `cve_exploit_61`)
 5. `sqli_extract_capability` — espera `db_read_access` (de `sqli_verify_42`)
-6. `idor_enumerate_?` + `priv_escalation_capability` — esperan `authenticated_session`
+6. `priv_escalation_capability` — espera `authenticated_session` (de `auth_bruteforce_55`)
 
 #### Cómo se construye el plan
 
@@ -1043,7 +1063,7 @@ Salida stdout (JSON) al terminar:
 ```
 
 - `exit_code 0` = ejecución técnicamente correcta (puede ser `confirmed=false`)
-- `exit_code != 0` = error de ejecución (se registra stderr como `error_message`)
+- `exit_code != 0` = `execute_vector()` en `attack_orchestrator.py` **no lo trata como fallo del nodo**: devuelve `{confirmed: false, confidence_delta: -0.1, error: stderr}` y el nodo queda `status="completed"` con `confirmed_finding=false` — el stderr queda dentro de `output_json`, **no** en la columna `error_message` de `attack_results` (esa columna solo se llena si `execute_vector()` lanza una excepción de Python o hace timeout, ver `_active_processes`)
 
 ---
 
@@ -1169,11 +1189,19 @@ Streaming de logs del orquestador al frontend vía Redis pub/sub (canal `anubis:
 
 ---
 
-### 6. Scripts de Ataque (`attack_scripts/`)
+### 6. Scripts de Ataque (`attack_scripts/`) — enfoque abandonado, reemplazado por el Vector Agent
 
-> **Estado (2026-07-06)**: sin scripts implementados. `header_exploits.py` — único de los 10 vectores del catálogo que llegó a implementarse (2026-06-17) — se eliminó: el Vector Agent IA (`vector_agent.py`, ver sección siguiente) lo reemplaza con un enfoque más flexible, la IA razona y ejecuta comandos directamente en vez de depender de un script Python fijo por vector. Sin impacto en runs existentes (`attack_results` no tenía ningún registro histórico con `vector_type='header_exploits'`); la regla `header_verify` sigue generando el nodo en el DAG, y el orquestador lo marca `pending`/`skipped` igual que a los otros 9 vectores nunca escritos.
+> **Este enfoque quedó descartado, no es un roadmap pendiente.** El plan original era un script Python por vector (`sqli.py`, `xss_playwright.py`, etc., contrato fijo de entrada/salida abajo). Se abandonó a favor del **Vector Agent IA** (`vector_agent.py`, sección 7): la IA razona y ejecuta comandos directamente contra el target en vez de depender de un binario Python fijo por vector — más flexible y no requiere escribir/mantener 9 scripts distintos.
+>
+> Evidencia de que es un abandono real y no solo falta de tiempo: `attack_planner.py` y `attack_orchestrator.py` (el motor de reglas + DAG que dispatcha a estos scripts) no tienen un solo commit desde el commit inicial del repo, mientras que `vector_agent.py` sigue recibiendo fixes activos. Y en la UI (`AttackTargets.jsx`), la ejecución real de un vector individual pasa por `POST /attack/vector-run` (Vector Agent) — no por el botón Launch del DAG, que solo dispara `execute_attack_run()`.
+>
+> `header_exploits.py` fue el único script que llegó a implementarse (2026-06-17) y se eliminó cuando se decidió el pivote (sin impacto: `attack_results` no tenía registros históricos con `vector_type='header_exploits'`).
 
-#### Contrato de todos los scripts
+#### El DAG (`POST /attack/runs`) sigue existiendo pero no ejecuta nada
+
+`execute_attack_run()` y el botón **Launch** de `AttackTargets.jsx` son código real, siguen andando, y `build_attack_plan()` sigue construyendo el DAG correctamente (ver secciones 2-3 arriba, verificadas contra el código y siguen siendo fieles). Pero como ningún archivo existe en `attack_scripts/`, `execute_vector()` devuelve `pending: true` para **cualquier** `vector_type` del catálogo, y el orquestador marca esos nodos `skipped` sin fallar el run. En la práctica, lanzar un Attack Run hoy completa "exitosamente" sin ejecutar ningún ataque real — es la vía de la **AI Attack Planner + Vector Agent** (`POST /attack/ai-plan/{target_id}` → `POST /attack/vector-run` por cada vector sugerido) la que sí produce resultados.
+
+#### Contrato que tendrían los scripts (documentación histórica, no implementado)
 
 ```bash
 python3 <script>.py <target_url> <params_json>
@@ -1185,23 +1213,23 @@ python3 <script>.py <target_url> <params_json>
 // exit_code != 0 → error de ejecución (mensaje en stderr)
 ```
 
-Evidencias guardadas en: `/home/anubis/AnubisProject/reports/attack/<vector_type>/`
+Evidencias se hubieran guardado en: `/home/anubis/AnubisProject/reports/attack/<vector_type>/`
 
-#### Scripts disponibles
+#### Catálogo original (ninguno se escribió, no hay plan de escribirlos)
 
-| Script | Estado | Intrusividad | Qué hace |
-|--------|--------|-------------|----------|
-| `sqli.py` | ⏳ Pendiente | active | SQLMap contra endpoints marcados por ZAP/Nikto |
-| `sqli_extract.py` | ⏳ Pendiente | exploitive | SQLMap --dump tras confirmar SQLi |
-| `xss_playwright.py` | ⏳ Pendiente | active | Playwright para confirmar XSS con screenshot |
-| `auth_bruteforce.py` | ⏳ Pendiente | active | Hydra/Patator en endpoints sin rate limiting |
-| `idor_enumerate.py` | ⏳ Pendiente | active | Enumeración IDOR con sesión autenticada |
-| `priv_escalation.py` | ⏳ Pendiente | exploitive | Escalada de privilegios post-autenticación |
-| `tls_downgrade.py` | ⏳ Pendiente | passive | Verificación downgrade TLS vía testssl.sh |
-| `cve_exploiter.py` | ⏳ Pendiente | exploitive | PoC de CVE con searchsploit |
-| `post_rce_loot.py` | ⏳ Pendiente | exploitive | Recolección post-RCE |
+| Script | Intrusividad | Qué habría hecho |
+|--------|-------------|----------|
+| `sqli.py` | active | SQLMap contra endpoints marcados por ZAP/Nikto |
+| `sqli_extract.py` | exploitive | SQLMap --dump tras confirmar SQLi |
+| `xss_playwright.py` | active | Playwright para confirmar XSS con screenshot |
+| `auth_bruteforce.py` | active | Hydra/Patator en endpoints sin rate limiting |
+| `idor_enumerate.py` | active | Enumeración IDOR con sesión autenticada |
+| `priv_escalation.py` | exploitive | Escalada de privilegios post-autenticación |
+| `tls_downgrade.py` | passive | Verificación downgrade TLS vía testssl.sh |
+| `cve_exploiter.py` | exploitive | PoC de CVE con searchsploit |
+| `post_rce_loot.py` | exploitive | Recolección post-RCE |
 
-Scripts pendientes: el orquestador los detecta (`pending: true` en output) y los registra como `skipped` sin fallar el run completo.
+Todos estos `vector_type` siguen existiendo como reglas en `VECTOR_RULES` (`attack_planner.py`) y siguen generando nodos válidos en el DAG — solo que ninguno tiene script que ejecutar, así que todos terminan `skipped`.
 
 ---
 
@@ -1267,9 +1295,12 @@ El agente está concebido exclusivamente como módulo de **explotación**. El re
 
 #### Herramientas de explotación disponibles
 
+`ALLOWED_TOOLS` en `vector_agent.py` tiene 18 entradas — la tabla de abajo las cubre todas (la versión anterior de este README omitía `wget`, `openssl`, `grep`, `cat`, `head` y `echo`):
+
 | Herramienta | Uso principal |
 |-------------|---------------|
 | `curl` | Payloads HTTP: XSS, SQLi, LFI, SSRF, auth bypass |
+| `wget` | Descarga de recursos sin ejecutar |
 | `wpscan` | Enumeración y explotación WordPress (plugins, CVEs, usuarios) |
 | `sqlmap` | Explotación SQL (solo `--dbs`, `--tables`, `--dump --start=1 --stop=2`) |
 | `nuclei` | CVEs y exploits conocidos vía templates |
@@ -1278,6 +1309,11 @@ El agente está concebido exclusivamente como módulo de **explotación**. El re
 | `hydra` | Ataques de autenticación (máx. 20 intentos) |
 | `commix` | Inyección OS (solo `whoami`, `id`, `hostname`, `uname`) |
 | `testssl.sh` / `sslyze` | Explotación de configuraciones TLS débiles |
+| `openssl` | Handshakes manuales y verificación de cifrados (`s_client`) |
+| `grep` / `cat` / `head` | Procesamiento local de outputs — restringidos a leer solo dentro de `/tmp` (ver `FILE_READING_TOOLS` en Validación de seguridad) |
+| `echo` | Utilidad local, sin restricción de ruta |
+
+`python`/`python3` están **deliberadamente excluidos** de la allowlist (no es un olvido): un intérprete de propósito general anula por completo el sentido de restringir comandos — daría acceso irrestricto a red, filesystem y subprocesos. El `SYSTEM_PROMPT_BASE` tampoco los lista como herramienta disponible.
 
 #### Validación de seguridad
 
@@ -1298,15 +1334,17 @@ Al terminar (por `accion="finalizar"` o por agotar iteraciones), el agente retor
 
 ```json
 {
-  "estado":            "explotable" | "no_explotable" | "inconcluso",
-  "resumen":           "1-2 oraciones para reporte ejecutivo",
-  "evidencia_tecnica": "output exacto o fragmento relevante",
-  "impacto_negocio":   "qué podría hacer un atacante real",
-  "comando_clave":     "el comando que confirmó la vulnerabilidad",
-  "recomendacion":     "pasos técnicos de mitigación",
-  "iterations":        2
+  "estado":                 "explotable" | "no_explotable" | "inconcluso",
+  "resumen":                "1-2 oraciones para reporte ejecutivo",
+  "evidencia_tecnica":      "output exacto o fragmento relevante",
+  "impacto_negocio":        "qué podría hacer un atacante real",
+  "comando_clave":          "el comando que confirmó la vulnerabilidad",
+  "recomendacion_mitigacion": "pasos técnicos de mitigación",
+  "iterations":             2
 }
 ```
+
+> El campo que la IA devuelve es `recomendacion_mitigacion` (así lo exige el JSON schema del `SYSTEM_PROMPT_BASE` en `vector_agent.py`). `run_vector_agent_task()` en `tasks.py` lo mapea a la columna `recomendacion` al guardar (`run.recomendacion = result.get('recomendacion_mitigacion', '')`) — los nombres difieren entre el contrato de la IA y la tabla.
 
 Este resultado se guarda en la tabla `vector_runs` y se muestra en el split-view del modal.
 
@@ -1337,7 +1375,7 @@ Este resultado se guarda en la tabla `vector_runs` y se muestra en el split-view
 WS /ws/vector-run/{run_id}
 ```
 
-Canal Redis: `anubis:vector:{run_id}` (db=2). Cada línea publicada por `publish_fn()` en `vector_agent.py` llega al frontend en tiempo real. La conexión termina cuando el agente publica `[DONE]` o tras 600 s de inactividad.
+Canal Redis: `anubis:vector:run:{run_id}` (db=2) — publicado desde `run_vector_agent_task()` en `tasks.py` (no directo desde `vector_agent.py`; `publish_fn` que recibe `run_vector_agent()` es un callback que a su vez llama a `r.publish()` sobre ese canal). Cada línea llega al frontend en tiempo real. La conexión termina cuando el agente publica `[DONE]` o tras 600 s de inactividad.
 
 ---
 
