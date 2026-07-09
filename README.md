@@ -394,6 +394,8 @@ Cada script sigue el mismo patrón:
 
 > **Cableado de `fuzz_dirb`/`fuzz_gobuster`/`kiterunner` (2026-07-06)**: ninguno de los tres llamaba a `save_findings()` — corrían la herramienta y el resultado se perdía sin tocar la tabla `findings`. Las copias en `scripts/` de fuzz_dirb/gobuster además tenían una contraseña de DB equivocada y escribían el JSON fuera del proyecto. Kiterunner leía targets desde `reports/sitios.txt` (podía desincronizarse de la tabla `targets`) y guardaba bajo `module='api'`, un id no reconocido por `discover_modules()` — los resultados quedaban invisibles en el frontend aunque el escaneo corriera bien. Los tres quedaron corregidos: consultan `targets` en vivo, usan su module id real, y escriben en `reports/{módulo}/`.
 
+> **Flags de `fuzz_gobuster` incompatibles con gobuster 3.8.2 (2026-07-08)**: `run_gobuster()` pasaba `-z` (flag inexistente en 3.8.2 — gobuster imprimía el texto de ayuda en stdout y terminaba) y combinaba `-s` (lista blanca de status codes) con el blacklist por defecto `-b 404`, algo que gobuster rechaza. Ambos fallos hacían que el proceso terminara sin resultados en stdout pero **sin lanzar excepción**, así que el escaneo se reportaba como éxito con 0 hallazgos siempre — ningún target tuvo jamás un finding de `fuzz_gobuster` pese a correr en todos. Se quitó `-z` y se agregó `-b ''` para anular el blacklist; verificado en vivo contra `reverdec.org`, encuentra hallazgos reales (`.git`, `wp-admin`, `admin`, `login`, `robots.txt`).
+
 ### Extracción de evidencia en alertas de ZAP (2026-07-06 / 2026-07-07)
 
 `run_zap_engine()` deduplica alertas por `alert-risk-param` (antes era solo `alert-risk`, lo que descartaba alertas distintas del mismo tipo con distinto parámetro afectado). Para el campo `evidencia`, `_extract_evidencia()` en `owasp.py` resuelve un fallback cuando ZAP no llena `evidence` (pasa en reglas activas basadas en timing/errores, como Path Traversal o SQLi): prioriza el payload real enviado (`attack` + `param`), luego el campo `other` (explicación técnica de ZAP, ej. condiciones booleanas probadas), y por último la URL. Antes esos casos quedaban como `"N/A"`; desde 2026-07-07 la URL **siempre** se agrega al final de la evidencia (no solo como fallback), para poder reproducir el hallazgo sin volver a consultar ZAP.
@@ -531,7 +533,8 @@ El agente itera sobre todas las claves `GEMINI_API_KEY*` en orden. Si una falla 
 broker_url     = "redis://localhost:6379/0"
 result_backend = "redis://localhost:6379/0"
 timezone       = "Europe/Madrid"
-beat_schedule  = {"check-schedules-every-60s": {"task": "tasks.check_and_run_schedules", "schedule": 60.0}}
+beat_schedule  = {"check-schedules-every-minute": {"task": "tasks.check_and_run_schedules", "schedule": 60.0, "options": {"queue": "beat"}}}
+worker_concurrency = 2
 ```
 
 ---
