@@ -6,6 +6,9 @@ from celery_app import celery_app
 import subprocess
 import hashlib
 import re
+import threading
+import queue
+import time
 import redis as redis_lib
 
 # Mismo cliente Redis que main.py usa para los locks (db=1)
@@ -35,6 +38,15 @@ def _stream_subprocess(cmd: list, channel: str, timeout: int = 4500) -> int:
     """
     Ejecuta cmd como subproceso, publica cada línea de stdout/stderr a Redis
     filtrando ruido (errores 4xx, stack frames Java, etc.).
+
+    El timeout se mide contra un deadline de reloj (no contra `proc.wait()`
+    solo): un `for raw in iter(proc.stdout.readline, b'')` seguido de
+    `proc.wait(timeout=...)` nunca llega a evaluar ese timeout si el proceso
+    sigue produciendo output periódico sin terminar — pasó con un escaneo ZAP
+    de celsia.com cuyo spider quedó reseteando conexiones contra el WAF
+    (Incapsula) toda la noche, imprimiendo "36%" cada 10s indefinidamente sin
+    que el timeout de 75 min lo cortara nunca. Por eso la lectura corre en un
+    thread aparte y el loop principal chequea el deadline en cada iteración.
     Retorna el código de salida.
     """
     proc = subprocess.Popen(
@@ -43,15 +55,44 @@ def _stream_subprocess(cmd: list, channel: str, timeout: int = 4500) -> int:
         stderr=subprocess.STDOUT,
         bufsize=1,
     )
-    try:
+
+    line_queue = queue.Queue()
+
+    def _reader():
         for raw in iter(proc.stdout.readline, b''):
-            line = raw.decode('utf-8', errors='replace').rstrip()
-            if not _is_noise(line):
-                _log_redis.publish(channel, line)
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+            line_queue.put(raw)
+        line_queue.put(None)  # EOF
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            raw = line_queue.get(timeout=min(remaining, 1))
+        except queue.Empty:
+            continue
+        if raw is None:
+            break
+        line = raw.decode('utf-8', errors='replace').rstrip()
+        if not _is_noise(line):
+            _log_redis.publish(channel, line)
+
+    if timed_out:
         proc.kill()
         _log_redis.publish(channel, '[TIMEOUT] Escaneo superó el límite de tiempo')
+        proc.wait()
+    else:
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
     return proc.returncode
 
 from scan_modules import discover_modules

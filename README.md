@@ -51,7 +51,17 @@ AnubisProject/
 │   ├── database.py                     # Engine + SessionLocal + Base (SQLAlchemy)
 │   ├── tasks.py                        # Tareas Celery: escaneos + análisis IA
 │   ├── celery_app.py                   # Config Celery + Beat scheduler
-│   └── .env                           # Variables de entorno (ver sección dedicada)
+│   ├── scan_modules.py                 # Auto-descubrimiento de módulos (ver "Scan Engine")
+│   ├── attack_models.py                # Modelos SQLAlchemy de Anubis Attack (AuthorizedTarget, AttackRun, AttackResult)
+│   ├── attack_schemas.py               # Schemas Pydantic del DAG de ataque (AttackNode, AttackPlan)
+│   ├── attack_planner.py               # Motor de reglas N:M + constructor del DAG
+│   ├── attack_orchestrator.py          # Tarea Celery de ejecución + compuerta de autorización
+│   ├── vector_agent.py                 # Agente de Vectores IA (ver sección dedicada)
+│   ├── templates/
+│   │   └── index.html
+│   ├── requirements.txt
+│   ├── .env                            # Variables de entorno (ver sección dedicada)
+│   └── .env.example
 │
 ├── frontend/
 │   ├── src/
@@ -62,18 +72,19 @@ AnubisProject/
 │   │   │   └── ModeContext.jsx         # Contexto global: modo scan/attack
 │   │   ├── components/
 │   │   │   ├── Layout.jsx              # Sidebar + header + bottom nav con switch de modo
-│   │   │   ├── AttackPlanViewer.jsx    # ✅ Nuevo: nodos DAG con estado en tiempo real
-│   │   │   ├── LiveTerminal.jsx        # ✅ Nuevo: terminal WebSocket streaming logs Celery
-│   │   │   └── EvidenceGallery.jsx     # ✅ Nuevo: grid de evidencias capturadas
+│   │   │   ├── AttackPlanViewer.jsx    # Nodos DAG con estado en tiempo real
+│   │   │   ├── LiveTerminal.jsx        # Terminal WebSocket streaming logs Celery
+│   │   │   ├── EvidenceGallery.jsx     # Grid de evidencias capturadas
+│   │   │   └── CeleryMonitorPanel.jsx  # Panel de estado de workers (ver sección "Sistema")
 │   │   └── pages/
 │   │       ├── Login.jsx
 │   │       ├── Dashboard.jsx           # Modo scan: KPIs, targets, hallazgos
-│   │       ├── AttackDashboard.jsx     # ✅ Actualizado: mapa + Attack Control Panel completo
-│   │       ├── Targets.jsx
-│   │       ├── Findings.jsx
-│   │       ├── Historical.jsx
-│   │       ├── Schedule.jsx
-│   │       └── Reports.jsx             # Generación, listado, descarga PDF/DOCX, análisis IA
+│   │       ├── AttackDashboard.jsx     # Modo attack: mapa + Attack Control Panel
+│   │       ├── Targets.jsx / AttackTargets.jsx
+│   │       ├── Findings.jsx / AttackFindings.jsx
+│   │       ├── Historical.jsx / AttackHistorical.jsx
+│   │       ├── Schedule.jsx / AttackSchedule.jsx
+│   │       └── Reports.jsx / AttackReports.jsx   # Generación, listado, descarga PDF/DOCX, análisis IA
 │   ├── public/
 │   │   └── anubis-logo.png
 │   ├── package.json
@@ -81,10 +92,16 @@ AnubisProject/
 │   ├── tailwind.config.js
 │   └── postcss.config.js
 │
-├── attack_scripts/                     # Módulos de explotación (Anubis Attack)
-│   └── [sqli.py, xss_playwright.py…]  # ⏳ Pendientes: ver sección "Scripts de Ataque"
-│                                        # (header_exploits.py, único implementado, se eliminó
-│                                        #  2026-07-06 — el foco pasó a Vector Agent IA)
+├── deploy/                             # Instalación en máquina nueva (ver "Servicios Requeridos")
+│   ├── install.sh                      # Crea venvs, corre npm install, genera servicios systemd
+│   └── systemd/                        # Templates de los 6 servicios systemd --user
+│
+├── attack_scripts/                     # ⚠️ No existe todavía en disco — módulos de explotación
+│                                        # con contrato fijo (ver "Scripts de Ataque"). Sin scripts
+│                                        # implementados: header_exploits.py (único que llegó a
+│                                        # escribirse) se eliminó 2026-07-06 — el foco pasó al
+│                                        # Vector Agent IA (backend/vector_agent.py), que ejecuta
+│                                        # comandos directo en vez de depender de un script fijo.
 │
 ├── scripts/                            # Módulos de escaneo completo (todos los targets)
 │   ├── waf.py
@@ -113,7 +130,10 @@ AnubisProject/
 │   ├── kiterunner/
 │   ├── fuzz_dirb/
 │   ├── fuzz_gobuster/
-│   └── ...
+│   ├── attack/                         # Evidencias de Anubis Attack (screenshots, JSON dumps)
+│   ├── api/ · fuzzing/ · nmap/         # Placeholders sin uso todavía (solo .gitkeep)
+│   └── sitios.txt                      # Leído por owasp.py (TARGETS_FILE) — copia independiente
+│                                        # del sitios.txt de la raíz, puede desincronizarse de ella
 │
 ├── Pruebas Hardening OpenClaw.docx     # Plantilla Word para generación de reportes DOCX
 ├── logs/
