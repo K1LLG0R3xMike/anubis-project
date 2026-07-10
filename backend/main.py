@@ -7,7 +7,7 @@ from tasks import run_full_scan, run_individual_scan, analyze_report_with_ai
 from scan_modules import discover_modules, module_label, get_module_queue, set_module_queue
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import datetime
 import os
 import subprocess
@@ -1580,7 +1580,7 @@ def _serialize_result(r: AttackResult) -> dict:
 class VectorRunCreate(BaseModel):
     target_id: int
     vector: dict
-    mode: str        # "quick" | "full"
+    mode: Literal["quick", "full"]
     instructions: Optional[str] = ""
 
 

@@ -245,11 +245,24 @@ def run_vector_agent_task(self, run_id: int):
             db.commit()
             return
 
+        vector = json.loads(run.vector_json) if run.vector_json else {}
+
+        intrusiveness = vector.get('intrusividad') or 'exploitive'
+        if intrusiveness not in ('passive', 'active', 'exploitive'):
+            intrusiveness = 'exploitive'  # valor desconocido → asumir el más restrictivo (fail closed)
+
+        from attack_orchestrator import validate_scope
+        scope_error = validate_scope(db, target.url, intrusiveness, None)
+        if scope_error:
+            publish(f"[SCOPE_ERROR] {scope_error}")
+            run.status = 'failed'
+            run.resumen = f"Bloqueado por control de scope: {scope_error}"
+            db.commit()
+            return
+
         run.status = 'running'
         run.started_at = datetime.now(timezone.utc)
         db.commit()
-
-        vector = json.loads(run.vector_json) if run.vector_json else {}
 
         # ── Contexto de escaneos previos ──────────────────────────────────
         import json as _json
